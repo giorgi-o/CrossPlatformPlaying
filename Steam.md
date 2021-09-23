@@ -8,7 +8,7 @@ Just go [here](https://steamcommunity.com/dev/apikey). You will need to login to
 Your API key should look something like `123456789ABCDEF123456789ABCDEF12`
 
 ## How to get Steam IDs
-Use [steamidfinder.com]. You need to get the `steamID64 (Dec)` ID of each of the friends you want to see the presence of on Discord.
+Use [steamidfinder.com](https://www.steamidfinder.com/). You need to get the `steamID64 (Dec)` ID of each of the friends you want to see the presence of on Discord.
 
 ## Where to put the API Key and the Steam IDs
 Open `CrossPlatformPlaying.plugin.js` in your favorite text editor and look at the top of the file for the following:

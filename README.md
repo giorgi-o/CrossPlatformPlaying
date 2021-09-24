@@ -14,12 +14,12 @@ CrossPlatformPlaying is a plugin that lets you see what your friends are playing
 - Hypixel
 
 ## Installation
-- Download `CrossPlatformPlaying.plugin.js` but don't move it to the plugins folder yet.
-- Open it in your favorite text editor
-- Do the appropriate setup for the platform(s) you want to use
+- Download  [CrossPlatformPlaying.plugin.js](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/CrossPlatformPlaying.plugin.js) and move it to your plugins folder.
+- A new file called `CrossPlatformPlaying.config.json` should appear in your plugins folder, open it in your favorite text editor.
+- Do the appropriate setup for the platform(s) you want to use.
 
 ## Current status
-This is my first time writing a BetterDiscord plugin, as well as my first open-source project. Any feedback and/or contributions greatly appreciated, especially if this project is to support more platforms and games that I don't play or have the knowledge of how they work.
+This is my first time writing a BetterDiscord plugin, so any feedback and/or contributions are greatly appreciated, especially if this project is to support more platforms and games that I don't play or have the knowledge of how they work.
 
 **Future improvements:**
 - Platform support:
@@ -27,14 +27,14 @@ This is my first time writing a BetterDiscord plugin, as well as my first open-s
   - Xbox Live _(this is useful as it shows what people are playing on Xbox but also on PC via Game Bar)_
   - Support for Steam Rich Presence _(to show extra info in games that use Steam's RPC such as CS:GO)_
   - Implement the rest of Riot Games (TFT, Runeterra)
-  - Rocket League
   - Playstation
   - Battle.net
-  - Any other game that lets you see what your friends are playing, theoretically
+  - Uplay
+  - Any other platform or game that lets you see what your friends are playing, theoretically
 - Improve the settings panel
+  - Add user-friendly interface to easily link discord users to in-game IDs
   - Enable toggling individual platforms on/off
   - Make inputting API keys and tokens easier
-  - Add user-friendly interface to easily link discord users to in-game IDs
 - The Code
   - Make it modular to easily install/remove platforms
   - Improve the way the plugin injects the custom activities (doesn't currently update the member list)

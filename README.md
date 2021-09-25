@@ -24,6 +24,8 @@ CrossPlatformPlaying is a plugin that lets you see what your friends are playing
 ## Current status
 This is my first time writing a BetterDiscord plugin, so any feedback and/or contributions are greatly appreciated, especially if this project is to support more platforms and games that I don't play or have the knowledge of how they work.
 
+Feel free to DM me or ping me in the BetterDiscord server to give feedback or to ask any questions.
+
 **Future improvements:**
 - Platform support:
   - Epic Games _(currently working on it)_

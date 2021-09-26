@@ -1,3 +1,9 @@
+# Note
+
+The region is hard-coded to EUW1, meaning it won't work for people in other regions. I'm working on a way to automatically detect the region, but in the meantime you'll have to change the code manually for it to work.
+
+If you have any other issues feel free to DM me.
+
 # How to setup
 In order for Riot presences to work, you need to provide two things
 1. Your `auth.riotgames.com` cookies

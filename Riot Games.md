@@ -1,13 +1,9 @@
-# Note
-
-The region is hard-coded to EUW1, meaning it won't work for people in other regions. I'm working on a way to automatically detect the region, but in the meantime you'll have to change the code manually for it to work.
-
-If you have any other issues feel free to DM me.
+This is quite a long setup. If you have any issues feel free to DM me.
 
 # How to setup
 In order for Riot presences to work, you need to provide two things
 1. Your `auth.riotgames.com` cookies
-2. The list of Riot XMPP JIDs and their respective Discord IDs
+2. The list of Riot XMPP PUUIDs and their respective Discord IDs
 
 ## How to get your riot cookies
 Your cookies can be used by anyone to log into your riot account, be careful what you do with them.
@@ -26,26 +22,57 @@ You'll need to be logged into your Riot Games account on your browser of choice 
 
 Thoses are your cookies, you'll need them for later.
 
-# How to get Riot JIDs
+# How to get Riot PUUIDs
 
-There are two ways of getting the JIDs of your friends: the easy way or the DIY way.
+PUUID: Player Universally Unique Identifiers (/'puId/, POO-id)
+
+There are two ways of getting the PUUIDs of your friends: the easy way or the DIY way.
 
 ## The Easy Way
 
 1. Download and install [Node.JS](https://nodejs.org/)
-2. Download [riotGetAndFilterJIDs.js](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/riotGetAndFilterJIDs.js)
+2. Download [riotGetAndFilterPUUIDs.js](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/riotGetAndFilterPUUIDs.js)
 3. Right click > edit it to add your cookies on line 5, between the two quotes
 4. Run it using Node.JS
+
+After connecting to Riot's servers, it will show you all your Riot friends one by one.  
+For each one, paste their Discord ID and press enter. Several Riot accounts can have the same Discord ID (if one person has two accounts, for example)  
+For the friends that don't have a Discord account, just press enter without typing anything.
+
+Afterwards it should print something like this:
+```js
+"usersMap": {
+    "316978243716775947": [
+        "12345678-9abcd-ef12-3456-789abcdef123"
+    ],
+    "316937167824775948": [
+        "12345678-9abcd-ef12-0123-789abcdef123"
+    ],
+    "316371978246775949": [
+        "12345678-9abcd-ef12-7895-789abcdef123",
+        "12345678-9abcd-ef12-3456-789abcdef123"
+    ],
+    "316978243757167940": [
+        "12345678-9abcd-ef12-3698-789abcdef123"
+    ],
+    "316978677594243711": [
+        "12345678-9abcd-ef12-7412-789abcdef123"
+    ]
+    ...
+}
+```
+
+Copy it and paste it in the appropriate place in `CrossPlatformPlaying.config.json`.
 
 ## The DIY Way
 
 1. Open `CrossPlatformPlaying.plugin.js` in your text editor of choice
-2. Go to line 402
+2. Go to line 408
 3. Remove the two slashes at the beginning to uncomment the line
 ```xml
 "<iq id=\"_xmpp_session1\" type=\"set\"><sessi...
 //"<iq type=\"get\" id=\"2\"><query xmlns=\"ja... <-- remove the first two slashes
-"<presence id=\"presence_6\"><show>offline</sh...
+"<presence/>",
 ```
 4. Save the file
 5. In Discord, press `Ctrl+Shift+I` and go to the Console tab
@@ -56,7 +83,7 @@ You should see the XMPP communications between your Discord and Riot's servers. 
 
 If you uncommented line 402, you should then see a huge log containing all your friends names. Paste that into an [XML Formatter](https://jsonformatter.org/xml-formatter) to make it easier to read.
 
-# Where to put the cookies and JIDs
+# Where to put the cookies and PUUIDs
 
 Open `CrossPlatformPlaying.config.json` and look for the following:
 ```json
@@ -69,10 +96,10 @@ Open `CrossPlatformPlaying.config.json` and look for the following:
 Put your cookies between the two quotes, and fill in the `usersMap` like this:
 ```json
 "usersMap": {
-    "<discord id>": ["<riot jid>"]
+    "<discord id>": ["<riot puuid>"]
 }
 ```
-You can also put multiple JIDs per discord user between the square brackets (if they have multiple accounts).
+You can also put multiple PUUIDs per discord user between the square brackets (if they have multiple accounts).
 
 Your config file should look something like this:
 ```json

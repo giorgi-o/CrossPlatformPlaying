@@ -126,7 +126,7 @@ const steamInit = () => {
         updateSteamCache();
 
         // we are allowed 120000 requests/day = 83/minute
-        intervals.push(setInterval(updateSteamCache, 5_000));
+        intervals.push(setInterval(updateSteamCache, 10_000));
     }
 }
 
@@ -352,7 +352,7 @@ presenceFunctions.push(hypixelGetActivity);
  **  RIOT  **
  ************/
 
-let riotCookies, discordToRiotJIDs = {};
+let riotCookies, discordToRiotPUUIDs = {};
 
 const riotHeaders = {
     // "cloudflare bitches at us without a user-agent" - molenzwiebel
@@ -382,37 +382,43 @@ async function riotGetPAS(token) {
 }
 
 // xmpp stuff
+const XMPPRegions = {"as2":"as2","asia":"jp1","br1":"br1","eu":"ru1","eu3":"eu3","eun1":"eu2","euw1":"eu1","jp1":"jp1","kr1":"kr1","la1":"la1","la2":"la2","na1":"na1","oc1":"oc1","pbe1":"pb1","ru1":"ru1","sea1":"sa1","sea2":"sa2","sea3":"sa3","sea4":"sa4","tr1":"tr1","us":"la1","us-br1":"br1","us-la2":"la2","us2":"us2"};
+const XMPPRegionURLs = {"as2":"as2.chat.si.riotgames.com","asia":"jp1.chat.si.riotgames.com","br1":"br.chat.si.riotgames.com","eu":"ru1.chat.si.riotgames.com","eu3":"eu3.chat.si.riotgames.com","eun1":"eun1.chat.si.riotgames.com","euw1":"euw1.chat.si.riotgames.com","jp1":"jp1.chat.si.riotgames.com","kr1":"kr1.chat.si.riotgames.com","la1":"la1.chat.si.riotgames.com","la2":"la2.chat.si.riotgames.com","na1":"na2.chat.si.riotgames.com","oc1":"oc1.chat.si.riotgames.com","pbe1":"pbe1.chat.si.riotgames.com","ru1":"ru1.chat.si.riotgames.com","sea1":"sa1.chat.si.riotgames.com","sea2":"sa2.chat.si.riotgames.com","sea3":"sa3.chat.si.riotgames.com","sea4":"sa4.chat.si.riotgames.com","tr1":"tr1.chat.si.riotgames.com","us":"la1.chat.si.riotgames.com","us-br1":"br.chat.si.riotgames.com","us-la2":"la2.chat.si.riotgames.com","us2":"us2.chat.si.riotgames.com"};
+
 let riotSocket;
 let riotSocketHeartbeatInterval;
 
+function decodeToken(token) {
+    return JSON.parse(atob(token.split('.')[1]))
+}
+
 function riotEstablishXMPPConnection(RSO, PAS) {
     try {
-        const address = "euw1.chat.si.riotgames.com";
+        const region = decodeToken(PAS).affinity;
+        const address = XMPPRegionURLs[region];
         const port = 5223;
+        const XMPPRegion = XMPPRegions[region];
+
+        const messages = [
+            `<?xml version="1.0"?><stream:stream to="${XMPPRegion}.pvp.net" version="1.0" xmlns:stream="http://etherx.jabber.org/streams">`,
+            `<auth mechanism="X-Riot-RSO-PAS" xmlns="urn:ietf:params:xml:ns:xmpp-sasl"><rso_token>${RSO}</rso_token><pas_token>${PAS}</pas_token></auth>`,
+            `<?xml version="1.0"?><stream:stream to="${XMPPRegion}.pvp.net" version="1.0" xmlns:stream="http://etherx.jabber.org/streams">`,
+            "<iq id=\"_xmpp_bind1\" type=\"set\"><bind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"></bind></iq>",
+            "<iq id=\"_xmpp_session1\" type=\"set\"><session xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/></iq>",
+            //"<iq type=\"get\" id=\"2\"><query xmlns=\"jabber:iq:riotgames:roster\" last_state=\"true\" /></iq>", // uncomment to show friends list
+            "<presence/>",
+            ]
 
         const sock = tls.connect(port, address, {}, () => {
             try {
-                console.log("connected")
-                const messages = [
-                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><stream:stream to=\"eu1.pvp.net\" xml:lang=\"en\" version=\"1.0\" xmlns=\"jabber:client\" xmlns:stream=\"http://etherx.jabber.org/streams\">",
-                    `<auth mechanism=\"X-Riot-RSO-PAS\" xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"><rso_token>${RSO}</rso_token><pas_token>${PAS}</pas_token></auth>`,
-                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><stream:stream to=\"eu1.pvp.net\" xml:lang=\"en\" version=\"1.0\" xmlns=\"jabber:client\" xmlns:stream=\"http://etherx.jabber.org/streams\">",
-                    "<iq id=\"_xmpp_bind1\" type=\"set\"><bind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"><puuid-mode enabled=\"true\"/><resource>RC-2709252368</resource></bind></iq>",
-                    "<iq id=\"_xmpp_session1\" type=\"set\"><session xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/></iq>",
-                    //"<iq type=\"get\" id=\"2\"><query xmlns=\"jabber:iq:riotgames:roster\" last_state=\"true\" /></iq>",
-                    "<presence id=\"presence_6\"><show>offline</show><games><keystone><st>chat</st><s.t>1631053016131</s.t><m>Hi there fellow programmer!</m><s.p>keystone</s.p></keystone></games></presence>",
-                ]
-
-                for (let i = 0; i < messages.length; i++) {
-                    setTimeout(() => send(messages[i]), i * 200);
-                }
+                console.log("VAL: Connected")
+                sendNext();
                 riotSocketHeartbeatInterval = setInterval(() => send(" "), 150_000);
             } catch (e) {
                 err(e);
             }
         });
         riotSocket = sock;
-        // sock.setEncoding("utf8");
 
         const send = data => {
             try {
@@ -424,14 +430,18 @@ function riotEstablishXMPPConnection(RSO, PAS) {
             }
         }
 
+        const sendNext = () => send(messages.shift());
+
         let bufferedMessage = "";
 
-        sock.on("data", data => { // BUG where xmpp server sends message in 2 chunks, need to save previous chunk everytime to compare
+        sock.on("data", data => {
             try {
                 data = data.toString();
                 console.log("<- " + data);
+                if(messages.length > 0) sendNext();
+
+                // handle riot splitting messages into multiple parts
                 if(data.startsWith("<?xml")) return;
-                // if(data.includes("cdf1d665-3a89-5de8-9db4-805ef51e0de9")) debugger;
                 let oldBufferedMessage = null;
                 while(oldBufferedMessage !== bufferedMessage) {
                     oldBufferedMessage = bufferedMessage;
@@ -446,9 +456,8 @@ function riotEstablishXMPPConnection(RSO, PAS) {
 
                     const closingTagIndex = data.indexOf(`</${firstTagName}>`);
                     if(closingTagIndex === -1) {
-                        // debugger;
+                        // message is split, we need to wait for the end
                         bufferedMessage = data;
-                        // console.log("BUFFERED MESSAGE", bufferedMessage);
                         break;
                     }
 
@@ -472,7 +481,7 @@ function riotEstablishXMPPConnection(RSO, PAS) {
         sock.on("end", () => {
             console.error("VAL Connection Closed!");
             BdApi.alert("VAL Connection Closed!");
-            //valEstablishXMPPConnection(RSO, PAS);
+            //valEstablishXMPPConnection(RSO, PAS); // uncomment to automatically reconnect on disconnect
         });
         sock.on("drain", () => console.log("VAL: connection drained!"));
         sock.on("ready", () => console.log("VAL: connection ready!"));
@@ -485,6 +494,11 @@ function riotEstablishXMPPConnection(RSO, PAS) {
 
 const riotStartXMPPConnection = async () => {
     const access_token = await riotRefreshToken(riotCookies);
+    if(!access_token.startsWith('e')) {
+        console.log("Riot Access Token: " + access_token)
+        return err("Invalid access token, most likely your cookies are invalid.");
+    }
+
     const pas_token = await riotGetPAS(access_token);
 
     riotEstablishXMPPConnection(access_token, pas_token);
@@ -503,7 +517,7 @@ const riotLoadData = () => {
     const riotData = BdApi.loadData("CrossPlatformPlaying", "riot");
     if(riotData) {
         riotCookies = riotData.cookies;
-        discordToRiotJIDs = riotData.usersMap || {};
+        discordToRiotPUUIDs = riotData.usersMap || {};
     } else {
         BdApi.saveData("CrossPlatformPlaying", "riot", {cookies: "", usersMap: {}});
     }
@@ -520,42 +534,34 @@ const riotInit = () => {
 
 initFunctions.push(riotInit);
 
+const riotGetPresence = discord_id => {
+    const puuids = discordToRiotPUUIDs[discord_id];
+    if (!puuids) return;
+
+    const presences = [];
+
+    for (const puuid of puuids) {
+        const valPresence = valGetPresence(puuid);
+        if(valPresence) presences.push(valPresence);
+
+        const lolPresence = lolGetPresence(puuid);
+        if(lolPresence) presences.push(lolPresence);
+
+        const wrPresence = wrGetPresence(puuid);
+        if(wrPresence) presences.push(wrPresence);
+    }
+
+    if(presences.length > 0) return presences;
+}
+
+presenceFunctions.push(riotGetPresence);
 
 /****************
  **  VALORANT  **
  ****************/
 
 const valRpcAppID = "811469787657928704";
-const valRpcAssets = { // https://discord.com/api/v9/oauth2/applications/811469787657928704/assets
-    /*// game icons
-    "game_icon": "821906092098715708",
-    "game_icon_yellow": "823004475647721472",
-    "game_icon_white": "821508566061154355",
-    // maps
-    "splash_range": "811714608196747324",
-    "splash_range_square": "821415501842219008",
-    "splash_split": "811714608145367040",
-    "splash_split_square": "821415502136082462",
-    ...
-    "splash_fracture": "885319850698866731",
-    "splash_fracture_square": "885319850577231912",
-    // agents
-    "agent_yoru": "821425117036544011",
-    "agent_brimstone": "821425117049126912",
-    ...
-    "agent_kayo": "864716381471899708",
-    // ranks
-    "rank_0": "863605767222067291",
-    "rank_3": "824678873043435600",
-    "rank_4": "824678875216216115",
-    ...
-    "rank_24": "824678875422130176",
-    // gamemodes
-    "mode_unrated": "863298928346005514",
-    "mode_deathmatch": "863298927670329345",
-    ...
-    "mode_discovery": "864009137393631232",*/
-}
+const valRpcAssets = {} // https://discord.com/api/v9/oauth2/applications/811469787657928704/assets
 
 const valFetchRpcAssets = async () => {
     const assetsReq = await fetch(`https://discord.com/api/v9/oauth2/applications/${valRpcAppID}/assets`);
@@ -570,7 +576,7 @@ const valCache = {};
 
 const valProcessXMLData = data => {
     try {
-        const jid = data.substr(16, 36);
+        const puuid = data.substr(16, 36);
 
         // extract valorant presence
         const valorantData = riotExtractDataFromXML(data, "valorant");
@@ -579,12 +585,12 @@ const valProcessXMLData = data => {
             const timestamp = parseInt(riotExtractDataFromXML(valorantData, "s.t"));
             try {
                 const presenceData = JSON.parse(atob(base64Data));
-                valProcessPresenceData(jid, presenceData, timestamp);
+                valProcessPresenceData(puuid, presenceData, timestamp);
             } catch (e) {
                 debugger
             }
         } else {
-            delete valCache[jid];
+            delete valCache[puuid];
         }
     } catch (e) {
         err(e);
@@ -625,7 +631,7 @@ const valRanks = [
     'IMMORTAL 1', 'IMMORTAL 2', 'IMMORTAL 3',
     'RADIANT', 'Better than Radiant']
 
-const valProcessPresenceData = (jid, presenceData, timestamp) => {
+const valProcessPresenceData = (puuid, presenceData, timestamp) => {
     console.log(presenceData)
 
     try {
@@ -640,7 +646,7 @@ const valProcessPresenceData = (jid, presenceData, timestamp) => {
             return +Date.UTC(year, month, day, hour, minute, second);
         }
 
-        const previousPresence = valCache[jid];
+        const previousPresence = valCache[puuid];
 
         const map = presenceData.matchMap.split('/').pop();
 
@@ -717,7 +723,7 @@ const valProcessPresenceData = (jid, presenceData, timestamp) => {
                     if(presenceData.partyState === "CUSTOM_GAME_SETUP") return `Setting Up Custom Game`;
                     return `${presenceData.partyState} (?) - ${getGamemode()}`;
                 }
-                const menusGetLargeText = () => presenceData.isIdle ? "Away" : "In Lobby" //accountNumber === 0 ? "On Main" : "On smurf " + accountNumber;
+                const menusGetLargeText = () => presenceData.isIdle ? "Away" : "In Lobby";
 
                 presence = {
                     ...presenceBoilerplate,
@@ -785,24 +791,17 @@ const valProcessPresenceData = (jid, presenceData, timestamp) => {
                 break;
         }
 
-        valCache[jid] = presence;
+        valCache[puuid] = presence;
         console.log(presence);
     } catch (e) {
         err(e);
     }
 }
 
-const valGetPresence = discord_id => {
-    const jids = discordToRiotJIDs[discord_id];
-    if (!jids) return;
-
-    for (const jid of jids) {
-        const valPresence = valCache[jid];
-        if(valPresence) return valPresence;
-    }
+const valGetPresence = puuid => {
+    const valPresence = valCache[puuid];
+    if(valPresence) return valPresence;
 }
-
-presenceFunctions.push(valGetPresence);
 
 
 /***********
@@ -813,7 +812,7 @@ const lolCache = {};
 
 const lolProcessXMLData = data => {
     try {
-        const jid = data.substr(16, 36);
+        const puuid = data.substr(16, 36);
 
         // extract lol presence
         const lolData = riotExtractDataFromXML(data, "league_of_legends");
@@ -825,13 +824,13 @@ const lolProcessXMLData = data => {
                     const presenceData = JSON.parse(presenceUnparsed.replace(/&quot;/g, '"').replace(/"regalia":.+}",/, ""));
                     const timestamp = riotExtractDataFromXML(lolData, "s.t");
                     console.log(presenceData);
-                    lolProcessPresenceData(jid, presenceData, timestamp);
+                    lolProcessPresenceData(puuid, presenceData, timestamp);
                 } catch (e) {
                     debugger
                 }
             }
         } else {
-            delete lolCache[jid];
+            delete lolCache[puuid];
         }
     } catch (e) {
         err(e);
@@ -904,7 +903,7 @@ const lolFetchData = () => {
     lolFetchQueueTypes();
 }
 
-const lolProcessPresenceData = (jid, data, timestamp) => {
+const lolProcessPresenceData = (puuid, data, timestamp) => {
     try {
         timestamp = data.timeStamp || timestamp;
 
@@ -918,7 +917,7 @@ const lolProcessPresenceData = (jid, data, timestamp) => {
             return `(?) ${prefix}${data.gameQueueType} ${data.gameStatus}${suffix}`
         }
 
-        const previousPresence = lolCache[jid];
+        const previousPresence = lolCache[puuid];
         let presenceBoilerplate = {
             application_id: lolRpcAppId,
             name: data.gameMode === "TFT" ? "Teamfight Tactics" : "League of Legends",
@@ -997,7 +996,7 @@ const lolProcessPresenceData = (jid, data, timestamp) => {
             }
         }
         if (presence) {
-            lolCache[jid] = presence;
+            lolCache[puuid] = presence;
             console.log(presence);
         }
     } catch (e) {
@@ -1005,18 +1004,10 @@ const lolProcessPresenceData = (jid, data, timestamp) => {
     }
 }
 
-const lolGetPresence = discord_id => {
-    const jids = discordToRiotJIDs[discord_id];
-    if (!jids) return;
-
-    for (const jid of jids) {
-        const lolPresence = lolCache[jid];
-
-        if(lolPresence) return lolPresence;
-    }
+const lolGetPresence = puuid => {
+    const lolPresence = lolCache[puuid];
+    if(lolPresence) return lolPresence;
 }
-
-presenceFunctions.push(lolGetPresence);
 
 /*****************
  **  WILD RIFT  **
@@ -1026,7 +1017,7 @@ const wrCache = {};
 
 const wrProcessXMLData = data => {
     try {
-        const jid = data.substr(16, 36);
+        const puuid = data.substr(16, 36);
 
         // extract wild rift presence
         const wrData = riotExtractDataFromXML(data, "wildrift");
@@ -1035,19 +1026,19 @@ const wrProcessXMLData = data => {
             try {
                 const timestamp = parseInt(riotExtractDataFromXML(wrData, "s.t"));
                 const username = riotExtractDataFromXML(data, "m");
-                wrProcessPresenceData(jid, timestamp, username);
+                wrProcessPresenceData(puuid, timestamp, username);
             } catch (e) {
                 debugger
             }
         } else {
-            delete wrCache[jid];
+            delete wrCache[puuid];
         }
     } catch (e) {
         err(e);
     }
 }
 
-const wrProcessPresenceData = (jid, timestamp, username) => {
+const wrProcessPresenceData = (puuid, timestamp, username) => {
     let presence = {
         application_id: customRpcAppId,
         name: "League of Legends: Wild Rift",
@@ -1061,22 +1052,15 @@ const wrProcessPresenceData = (jid, timestamp, username) => {
         }
     };
 
-    wrCache[jid] = presence;
+    wrCache[puuid] = presence;
     console.log(presence);
 }
 
-const wrGetPresence = discord_id => {
-    const jids = discordToRiotJIDs[discord_id];
-    if (!jids) return;
-
-    for (const jid of jids) {
-        const wrPresence = wrCache[jid];
-
-        if(wrPresence) return wrPresence;
-    }
+const wrGetPresence = puuid => {
+    const wrPresence = wrCache[puuid];
+    if(wrPresence) return wrPresence;
 }
 
-presenceFunctions.push(wrGetPresence);
 
 
 /**************
@@ -1107,6 +1091,15 @@ module.exports = class CrossPlatformPlaying {
     start() {
         // Required function. Called when the plugin is activated (including after reloads)
 
+        // check if config json is valid
+        try {
+            BdApi.loadData("CrossPlatformPlaying", "");
+        } catch(e) {
+            // newlines don't work but whatever
+            BdApi.alert("Your config JSON is invalid!\nTry putting it into an online JSON formatter to look for any errors.\n" + e);
+            return;
+        }
+
         for(const initFunction of initFunctions) {
             initFunction();
         }
@@ -1116,11 +1109,14 @@ module.exports = class CrossPlatformPlaying {
         BdApi.Patcher.after("CrossPlatformPlaying", ActivityStore, "getActivities", (_this, args, ret) => {
             const id = args[0];
 
-            const newActivities = [];
+            let newActivities = [];
 
             for(const presenceFunction of presenceFunctions) {
                 const presence = presenceFunction(id);
-                if(presence) newActivities.push(presence);
+                if(presence) {
+                    if(Array.isArray(presence)) newActivities = newActivities.concat(presence)
+                    else newActivities.push(presence);
+                }
             }
 
             if(newActivities.length > 0) return newActivities.concat(ret); //ret.concat(newActivities);

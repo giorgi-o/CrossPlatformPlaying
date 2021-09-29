@@ -31,7 +31,7 @@ const fetch = (url, options={}) => {
                 res.body = data;
                 resolve(res);
             });
-        }).on("error", err);
+        })
         req.write(options.body || "");
         req.end();
         req.on("error", err);
@@ -50,6 +50,7 @@ const err = e => {
 
 let initFunctions = []; // functions to call when the plugin starts up
 let presenceFunctions = []; // functions to call to get the presence of a user
+let pluginStopped = false; // will be true once plugin is stopped (e.g. reload), prevents sockets from reconnecting
 
 const customRpcAppId = "883483733875892264";
 
@@ -72,7 +73,7 @@ const steam_getPlayerSummaries = async ids => {
             steam_processPlayerSummary(playerSummary);
         }
     } catch (e) {
-        console.error("couldn't json parse steam response", data);
+        console.error("Couldn't JSON Parse Steam response!", data);
     }
 }
 
@@ -175,9 +176,7 @@ const hypixel_getPlayerStatus = async uuid => {
             }
         }
     } catch (e) {
-        console.error(data);
-        console.error(e);
-        BdApi.alert("error while trying to json parse hypixel player status data");
+        console.error("Couldn't JSON Parse Hypixel status response!", data);
     }
 }
 
@@ -190,9 +189,7 @@ const hypixel_getPlayerInfo = async (uuid, session) => {
             hypixel_processPlayerData(uuid, json_data.player, session);
         }
     } catch (e) {
-        console.error(data);
-        console.error(e);
-        BdApi.alert("error while trying to json parse hypixel player status data");
+        console.error("Couldn't JSON Parse Hypixel player response!", data);
     }
 }
 
@@ -387,6 +384,8 @@ const XMPPRegionURLs = {"as2":"as2.chat.si.riotgames.com","asia":"jp1.chat.si.ri
 
 let riotSocket;
 let riotSocketHeartbeatInterval;
+let riotReconnectAttempts = 0;
+let riotLastReconnectAttempt = 0; // timestamp
 
 function decodeToken(token) {
     return JSON.parse(atob(token.split('.')[1]))
@@ -406,12 +405,12 @@ function riotEstablishXMPPConnection(RSO, PAS) {
             "<iq id=\"_xmpp_bind1\" type=\"set\"><bind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"></bind></iq>",
             "<iq id=\"_xmpp_session1\" type=\"set\"><session xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/></iq>",
             //"<iq type=\"get\" id=\"2\"><query xmlns=\"jabber:iq:riotgames:roster\" last_state=\"true\" /></iq>", // uncomment to show friends list
-            "<presence/>",
-            ]
+            "<presence/>"
+        ]
 
         const sock = tls.connect(port, address, {}, () => {
             try {
-                console.log("VAL: Connected")
+                console.log("VAL: Connected!")
                 sendNext();
                 riotSocketHeartbeatInterval = setInterval(() => send(" "), 150_000);
             } catch (e) {
@@ -478,15 +477,26 @@ function riotEstablishXMPPConnection(RSO, PAS) {
         });
 
         sock.on("error", console.error);
-        sock.on("end", () => {
+        sock.on("close", () => {
+            if(pluginStopped) return;
             console.error("VAL Connection Closed!");
-            BdApi.alert("VAL Connection Closed!");
-            //valEstablishXMPPConnection(RSO, PAS); // uncomment to automatically reconnect on disconnect
+            if(+new Date() - riotLastReconnectAttempt > 15_000) riotReconnectAttempts = 0;
+            else if(riotReconnectAttempts > 5) {
+                // already tried to reconnect 5 times, just give up
+                const errMessage = "Riot XMPP server connection failed!";
+                console.error(errMessage);
+                BdApi.alert(errMessage);
+                return;
+            }
+            riotReconnectAttempts++;
+            console.log(`Will try again in ${riotReconnectAttempts * 5}s...`);
+            setTimeout(() => {
+                riotLastReconnectAttempt = + new Date();
+                console.log(`VAL: Reconnect attempt number ${riotReconnectAttempts}`)
+                riotStartXMPPConnection();
+            }, riotReconnectAttempts * 5000);
         });
-        sock.on("drain", () => console.log("VAL: connection drained!"));
-        sock.on("ready", () => console.log("VAL: connection ready!"));
-        sock.on("lookup", () => console.log("VAL: connection lookup!"));
-        sock.on("timeout", () => console.log("VAL: connection timeout!"));
+        sock.on("timeout", () => console.err("VAL: connection timeout!"));
     } catch (e) {
         err(e);
     }
@@ -495,7 +505,7 @@ function riotEstablishXMPPConnection(RSO, PAS) {
 const riotStartXMPPConnection = async () => {
     const access_token = await riotRefreshToken(riotCookies);
     if(!access_token.startsWith('e')) {
-        console.log("Riot Access Token: " + access_token)
+        console.log("Riot Access Token: " + access_token);
         return err("Invalid access token, most likely your cookies are invalid.");
     }
 
@@ -708,7 +718,7 @@ const valProcessPresenceData = (puuid, presenceData, timestamp) => {
             },
             assets: {
                 small_image: valRpcAssets["rank_" + presenceData.competitiveTier] || valRpcAssets["rank_0"],
-                small_text: `${valRanks[presenceData.competitiveTier]} | LVL ${presenceData.accountLevel}`
+                small_text: `${valRanks[presenceData.competitiveTier]}${presenceData.leaderboardPosition > 0 ? ` #${presenceData.leaderboardPosition}` : ""} | LVL ${presenceData.accountLevel}`
             }
         };
         let presence = {};
@@ -819,13 +829,14 @@ const lolProcessXMLData = data => {
         if(lolData) {
             const presenceUnparsed = riotExtractDataFromXML(lolData, "p");
             if (presenceUnparsed) {
+                // regalia is an object within the object, causes issues with parser
+                const presenceHalfParsed = presenceUnparsed.replace(/&quot;/g, '"').replace(/&apos;/g, '"').replace(/"regalia":.+}",/, "");
                 try {
-                    // regalia is an object within the object, causes issues with parser
-                    const presenceData = JSON.parse(presenceUnparsed.replace(/&quot;/g, '"').replace(/"regalia":.+}",/, ""));
+                    const presenceData = JSON.parse(presenceHalfParsed);
                     const timestamp = riotExtractDataFromXML(lolData, "s.t");
                     console.log(presenceData);
                     lolProcessPresenceData(puuid, presenceData, timestamp);
-                } catch (e) {
+                } catch(e) {
                     debugger
                 }
             }
@@ -1126,6 +1137,7 @@ module.exports = class CrossPlatformPlaying {
     stop() {
         // Required function. Called when the plugin is deactivated
         // TODO make each platform implement their own destroy function, like initFunctions and presenceFunctions
+        pluginStopped = true;
         BdApi.Patcher.unpatchAll("CrossPlatformPlaying");
         for(const interval of intervals)
             clearInterval(interval);

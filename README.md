@@ -1,5 +1,5 @@
 # CrossPlatformPlaying
-A plugin that brings Rich Presence to games that don't support it, and lets you see what your friends are playing even if they turned off game activity.
+A [BetterDiscord](https://betterdiscord.app/) plugin that brings Rich Presence to games that don't support it, and lets you see what your friends are playing even if they turned off game activity.
 
 <img src="https://user-images.githubusercontent.com/20621396/134491197-54986bfc-9fe9-4a59-8e4d-a9391a792bf4.png" alt="valorant demo" width="250"/>
 <img src="https://user-images.githubusercontent.com/20621396/134491995-4141367c-e9ba-47ab-b5e6-735ac1f36abe.png" alt="valorant demo" width="250"/>
@@ -9,12 +9,14 @@ A plugin that brings Rich Presence to games that don't support it, and lets you 
 CrossPlatformPlaying is a plugin that lets you see what your friends are playing, as well as any additional information available such as gamemode, score, map, etc.
 
 ## Currently supports
-- Valorant/League of Legends/Wild Rift
+- Valorant/League of Legends
 - Steam
+- Twitch
 - Hypixel
 
 ## Installation
 - Download [CrossPlatformPlaying.plugin.js](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/CrossPlatformPlaying.plugin.js) and move it to your plugins folder.
+- Download and install [Zere's Plugin Library](https://rauenzi.github.io/BDPluginLibrary/release/0PluginLibrary.plugin.js) (right click > save as)
 - A new file called `CrossPlatformPlaying.config.json` should appear in your plugins folder, open it in your favorite text editor.
 - Do the appropriate setup for the platform(s) you want to use: 
   - [Steam](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/Steam.md)
@@ -29,10 +31,9 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
 **Future improvements:**
 - Platform support:
   - Epic Games _(currently working on it)_
-  - Twitch
   - Xbox Live _(this is useful as it shows what people are playing on Xbox but also on PC via Game Bar)_
   - Support for Steam Rich Presence _(to show extra info in games that use Steam's RPC such as CS:GO)_
-  - Implement the rest of Riot Games (TFT, Runeterra)
+  - Implement the rest of Riot Games (TFT, Runeterra, Wild Rift)
   - Playstation
   - Battle.net
   - Uplay
@@ -42,6 +43,7 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
   - Enable toggling individual platforms on/off
   - Make inputting API keys and tokens easier
 - The Code
+  - Make it not crash if you didn't install Zere's plugin library
   - Make it modular to easily install/remove platforms
   - Improve the way the plugin injects the custom activities (doesn't currently update the member list)
 - Add a Wiki of how it works _(how it interacts with each platform)_

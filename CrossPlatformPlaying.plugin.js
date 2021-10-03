@@ -345,6 +345,107 @@ const hypixelInit = () => {
 initFunctions.push(hypixelInit);
 presenceFunctions.push(hypixelGetActivity);
 
+
+/**************
+ **  TWITCH  **
+ **************/
+
+let twitchAuth, discordToTwitchID = {};
+
+const twitchCache = {};
+
+const twitchGetOnlineFriends = async () => {
+    const data = await fetch("https://gql.twitch.tv/gql", {
+        method: "POST",
+        headers: {
+            "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+            "Authorization": `OAuth ${twitchAuth}`
+        },
+        body: JSON.stringify([{operationName: "OnlineFriends", variables: {}, extensions: {persistedQuery: {version: 1, sha256Hash: "4fecfced6ce413ffa2eee3c6ce09cddd8fb251763c594c26fba5108cf2b92e69"}}}])
+    });
+
+    try {
+        const json_data = JSON.parse(data.body);
+        if (!json_data || !json_data.length) return;
+        for (const friend of json_data[0].data.currentUser.friends.edges) {
+            twitchProcessFriend(friend.node);
+        }
+    } catch (e) {
+        console.error("Couldn't JSON Parse Twitch response!", data);
+        console.error(e);
+    }
+}
+
+const twitchProcessFriend = friend => {
+    if(friend.activity) {
+        const previousPresence = twitchCache[friend.id];
+        if(friend.activity.type === "WATCHING") {
+            const isWatchingSamePerson = previousPresence && previousPresence.details.substr(9) === friend.activity.user.displayName;
+            twitchCache[friend.id] = {
+                application_id: customRpcAppId,
+                name: "Twitch",
+                details: `Watching ${friend.activity.user.displayName}`,
+                state: friend.activity.user.stream.game.displayName,
+                type: 3,
+                timestamps: {start: isWatchingSamePerson ? previousPresence.timestamps.start : +new Date()},
+                assets: {
+                    large_image: "892901377020424292",
+                    large_text: (friend.availability === "AWAY" ? "Away as " : "As ") + friend.displayName
+                }
+            }
+        } else if(friend.activity.type === "STREAMING") twitchCache[friend.id] = {
+            // todo fetch the title of the stream, that could be cool
+            name: "Twitch",
+            state: friend.activity.stream.game.displayName,
+            type: 1,
+            assets: {
+                large_image: "twitch:" + friend.login,
+                large_text: "As " + friend.displayName
+            },
+            url: "https://twitch.tv/" + friend.login,
+            id: ""
+        }
+    } else {
+        delete twitchCache[friend.id];
+    }
+}
+
+const twitchLoadData = () => {
+    const twitchData = BdApi.loadData("CrossPlatformPlaying", "twitch");
+    if(twitchData) {
+        twitchAuth = twitchData.auth_key;
+        discordToTwitchID = twitchData.usersMap || {};
+
+        if(twitchAuth.startsWith("OAuth ")) {
+            twitchAuth = twitchAuth.substr(6);
+            BdApi.saveData("CrossPlatformPlaying", "twitch", {auth_key: twitchAuth, usersMap: discordToTwitchID});
+        }
+    } else {
+        BdApi.saveData("CrossPlatformPlaying", "twitch", {auth_key: "", usersMap: {}});
+    }
+}
+
+const twitchInit = () => {
+    twitchLoadData();
+    if (twitchAuth) {
+        twitchGetOnlineFriends();
+        intervals.push(setInterval(twitchGetOnlineFriends, 30_000));
+    }
+}
+
+const twitchGetActivity = discord_id => {
+    if(discord_id in discordToTwitchID) {
+        for (const twitch_id of discordToTwitchID[discord_id]) {
+            if(twitchCache[twitch_id]) return twitchCache[twitch_id];
+        }
+    }
+}
+
+initFunctions.push(twitchInit);
+presenceFunctions.push(twitchGetActivity);
+
+
+
 /************
  **  RIOT  **
  ************/
@@ -767,8 +868,8 @@ const valProcessPresenceData = (puuid, presenceData, timestamp) => {
 
                 if(pregameGetDetails().includes("Match Found")) // match found 5sec timer
                     presence.timestamps.end = timestamp + 5000;
-                else if(pregameGetDetails().includes("Agent Select")) // start 75sec countdown once agent select has loaded
-                    presence.timestamps.end = timestamp + 75000;
+                else if(pregameGetDetails().includes("Agent Select")) // start 75sec countdown once agent select has loaded (79sec to include loading time)
+                    presence.timestamps.end = timestamp + 79000;
                 break;
             case "INGAME":
                 const ingameGetDetails = () => {
@@ -916,7 +1017,7 @@ const lolFetchData = () => {
 
 const lolProcessPresenceData = (puuid, data, timestamp) => {
     try {
-        timestamp = data.timeStamp || timestamp;
+        timestamp = Math.max(data.timeStamp, timestamp) || data.timeStamp || timestamp;
 
         const getGamemode = (prefix = "", suffix = "") => {
             // add prefix and suffix
@@ -1117,7 +1218,9 @@ module.exports = class CrossPlatformPlaying {
 
         const ActivityStore = ZeresPluginLibrary.DiscordModules.UserStatusStore;
 
+
         BdApi.Patcher.after("CrossPlatformPlaying", ActivityStore, "getActivities", (_this, args, ret) => {
+
             const id = args[0];
 
             let newActivities = [];

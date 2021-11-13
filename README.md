@@ -11,17 +11,14 @@ CrossPlatformPlaying is a plugin that lets you see what your friends are playing
 ## Currently supports
 - Valorant/League of Legends
 - Steam
+- Epic Games (Fortnite, Rocket League...)
 - Twitch
 - Hypixel
 
 ## Installation
 - Download [CrossPlatformPlaying.plugin.js](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/CrossPlatformPlaying.plugin.js) and move it to your plugins folder.
-- Download and install [Zere's Plugin Library](https://rauenzi.github.io/BDPluginLibrary/release/0PluginLibrary.plugin.js) (right click > save as)
-- A new file called `CrossPlatformPlaying.config.json` should appear in your plugins folder, open it in your favorite text editor.
-- Do the appropriate setup for the platform(s) you want to use: 
-  - [Steam](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/Steam.md)
-  - [Riot Games](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/Riot%20Games.md)
-  - [Hypixel](https://github.com/giorgi-o/CrossPlatformPlaying/blob/main/Hypixel.md)
+- If it asks you to install **Zere's Plugin Library**, click "Download Now" and once it finished installing, restart Discord using `Ctrl+R`.
+- Open BetterDiscord's plugin settings menu, enable CrossPlatformPlaying and click on the cog wheel to enable and configure the platforms you want to use.
 
 ## Current status
 This is my first time writing a BetterDiscord plugin, so any feedback and/or contributions are greatly appreciated, especially if this project is to support more platforms and games that I don't play or have the knowledge of how they work.
@@ -30,7 +27,7 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
 
 **Future improvements:**
 - Platform support:
-  - Epic Games _(currently working on it)_
+  - Origin _(up next)_
   - Xbox Live _(this is useful as it shows what people are playing on Xbox but also on PC via Game Bar)_
   - Support for Steam Rich Presence _(to show extra info in games that use Steam's RPC such as CS:GO)_
   - Implement the rest of Riot Games (TFT, Runeterra, Wild Rift)
@@ -38,14 +35,12 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
   - Battle.net
   - Uplay
   - Any other platform or game that lets you see what your friends are playing, theoretically
-- Improve the settings panel
-  - Add user-friendly interface to easily link discord users to in-game IDs
-  - Enable toggling individual platforms on/off
-  - Make inputting API keys and tokens easier
+  - Apple Music _(integrate it just like Spotify)_
 - The Code
-  - Make it not crash if you didn't install Zere's plugin library
   - Make it modular to easily install/remove platforms
   - Improve the way the plugin injects the custom activities (doesn't currently update the member list)
 - Add a Wiki of how it works _(how it interacts with each platform)_
+- Add guides on how to get the tokens/cookies of each platform
+- Make the settings panel less ugly
 
 Again, most of this is out of my reach, so any contribution is greatly appreciated.

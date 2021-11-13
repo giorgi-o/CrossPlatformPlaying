@@ -1554,7 +1554,7 @@ class Lol {
         this.riotPUUIDToUsername = riotPUUIDToUsername;
         this.riotPUUIDToSummonerName = riotPUUIDToSummonerName;
 
-        this.gameVersion = "11.21.1"; // will be overridden by lolGetLatestVersion()
+        this.gameVersion = ""; // will be overridden by lolGetLatestVersion()
         this.champions = {};
         this.skins = {};
         this.assets = { // to be filled in by lolFetchRpcAssets()

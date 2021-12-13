@@ -27,7 +27,7 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
 
 **Future improvements:**
 - Platform support:
-  - Origin _(up next)_
+  - Origin _(up next, there seems to be no up-to-date documentation/code on the internet but I'm getting there)_
   - Xbox Live _(this is useful as it shows what people are playing on Xbox but also on PC via Game Bar)_
   - Support for Steam Rich Presence _(to show extra info in games that use Steam's RPC such as CS:GO)_
   - Implement the rest of Riot Games (TFT, Runeterra, Wild Rift)
@@ -39,6 +39,7 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
 - The Code
   - Make it modular to easily install/remove platforms
   - Improve the way the plugin injects the custom activities (doesn't currently update the member list)
+- See if your invisible friends are online _(the plugin already has the data, I just need to figure out the best way to display online vs invisible vs offline)_
 - Add a Wiki of how it works _(how it interacts with each platform)_
 - Add guides on how to get the tokens/cookies of each platform
 - Make the settings panel less ugly

@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.2
+ * @version 0.2.0
  * @authorId 316978243716775947
  */
 /*@cc_on
@@ -2772,7 +2772,7 @@ module.exports = (() => {
                 "discord_id": "316978243716775947",
                 "github_username": "giorgi-o"
             }],
-            "version": "0.2",
+            "version": "0.2.0",
             "description": "Show what people are playing on other platforms such as Steam and Valorant",
             "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
             "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
@@ -2817,7 +2817,7 @@ module.exports = (() => {
         const plugin = (Plugin, Api) => {
             return class CrossPlatformPlaying extends Plugin {
                 load() {
-                    const version = "0.2";
+                    const version = "0.2.0";
                     // added: green, improved: blurple, fixed: red, progress: yellow
                     const changelog = [
                         {

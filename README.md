@@ -2,8 +2,8 @@
 A [BetterDiscord](https://betterdiscord.app/) plugin that brings Rich Presence to games that don't support it, and lets you see what your friends are playing even if they turned off game activity.
 
 <img src="https://user-images.githubusercontent.com/20621396/134491197-54986bfc-9fe9-4a59-8e4d-a9391a792bf4.png" alt="valorant demo" width="250"/>
-<img src="https://user-images.githubusercontent.com/20621396/134491995-4141367c-e9ba-47ab-b5e6-735ac1f36abe.png" alt="valorant demo" width="250"/>
-<img src="https://user-images.githubusercontent.com/20621396/134492653-09bc1e14-2ad5-45cc-9f9d-ceeb15ad8d00.png" alt="valorant demo" width="250"/>
+<img src="https://user-images.githubusercontent.com/20621396/134491995-4141367c-e9ba-47ab-b5e6-735ac1f36abe.png" alt="steam demo" width="250"/>
+<img src="https://user-images.githubusercontent.com/20621396/134492653-09bc1e14-2ad5-45cc-9f9d-ceeb15ad8d00.png" alt="hypixel demo" width="250"/>
 
 
 CrossPlatformPlaying is a plugin that lets you see what your friends are playing, as well as any additional information available such as gamemode, score, map, etc.

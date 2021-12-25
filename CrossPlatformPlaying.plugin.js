@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.1
+ * @version 0.2
  * @authorId 316978243716775947
  */
 /*@cc_on
@@ -39,7 +39,7 @@ const fs = require("fs");
 
 // send an HTTP request to a URL, bypassing CORS policy
 const fetch = (url, options={}) => {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         const req = https.request(url, {
             method: options.method || "GET",
             headers: options.headers || {}
@@ -70,8 +70,6 @@ const err = e => {
     BdApi.alert("Error happened!\n" + e);
 }
 
-const platforms = [];
-
 const pluginName = "CrossPlatformPlaying";
 const customRpcAppId = "883483733875892264";
 
@@ -79,13 +77,12 @@ const customRpcAppId = "883483733875892264";
 let discord_id = 0;
 
 
-// to implement a new platform, create a class that extends this class
+// to implement a new platform, create a subclass of Platform
 // and override constructor(), start(), serializeData(), deserializeData(), getPresence(), destroy() and getSettings()
 class Platform {
     // all platforms should call super() with their platformId
     constructor(platformId) {
         this.platformId = platformId; // used when storing the platform settings
-        this.destroyed = false; // whether the platform should stop (e.g. the plugin is restarted)
     }
 
     // should be called in constructor if the platform is enabled
@@ -123,7 +120,15 @@ class Platform {
     };
 
     // called when the plugin is stopped or the platform is disabled
-    destroy() {};
+    // pluginShutdown is true if the whole plugin is being disabled
+    destroy(pluginShutdown) {};
+
+    // helper function to restart the platform, for example to re-authenticate.
+    restart() {
+        this.destroy(false);
+        this.enabled = true;
+        this.start();
+    }
 
     // should return an HTML element containing the settings panel
     // takes as argument an object containing a map of discord IDs to and from usernames
@@ -131,6 +136,12 @@ class Platform {
         const div = document.createElement("div");
         div.innerText = "No settings panel for " + this.platformId;
         return div;
+    }
+
+    log(s) {
+        if(!this.debug) return;
+        if(typeof s === "object") console.log(`[${this.platformId.toUpperCase()}]`, s);
+        else console.log(`[${this.platformId.toUpperCase()}] ${s}`);
     }
 }
 
@@ -141,8 +152,43 @@ const SettingsBuilder = {
             platform.enabled = value;
             if(!wasEnabled && value) platform.start();
             if(wasEnabled && !value) platform.destroy();
+            platform.saveData();
         }
         return new ZeresPluginLibrary.Settings.Switch("Enabled", "Whether this platform is enabled", platform.enabled, onChange);
+    },
+    toggleEnabledSwitch: (enabledSwitch) => {
+        enabledSwitch.getElement().children[0].children[0].children[1].children[0].children[1].click();
+    },
+    debugSwitch: (platform) => {
+        const onChange = (value) => {
+            platform.debug = value;
+            if(value) platform.log("Debug enabled!");
+        }
+        return new ZeresPluginLibrary.Settings.Switch("Debug", "Whether to print debug info to the console", platform.debug, onChange);
+    },
+    getTextboxInput: (textbox) => {
+        return textbox.children[0].children[1].children[0];
+    },
+    textboxWithButton: (name, note, value, onChange, textboxOptions, buttonText, onClick, timeout=50) => {
+        if(!name) name = ""; // if name is null, button formatting doesn't work for some reason
+        const textbox = new ZeresPluginLibrary.Settings.Textbox(name, note, value, onChange, textboxOptions).getElement();
+        setTimeout(() => {
+            const button = document.createElement("button");
+            button.innerText = buttonText;
+            button.onclick = onClick;
+
+            button.classList.add("bd-button");
+            button.style.fontSize = "16px";
+            button.style.marginLeft = "10px";
+            button.style.whiteSpace = "nowrap";
+
+            const div = textbox.children[0].children[1];
+
+            div.style.flexDirection = "row";
+
+            div.append(button);
+        }, timeout);
+        return textbox;
     },
     settingsPanel: (platform, ...nodes) => {
         const panel = new ZeresPluginLibrary.Settings.SettingPanel(() => platform.saveData(), ...nodes);
@@ -170,6 +216,7 @@ const SettingsBuilder = {
          */
 
         const userMapDiv = document.createElement("div");
+        userMapDiv.classList.add("marginBottom20-32qID7");
         if(platformDatalist) userMapDiv.append(platformDatalist);
 
         const table = document.createElement("table");
@@ -190,13 +237,11 @@ const SettingsBuilder = {
         const platformColumnTitle = document.createElement("th");
         platformColumnTitle.innerText = platformHeaderValue || "Platform user";
         platformColumnTitle.style.color = "var(--header-primary)";
-        // platformColumnTitle.className = "bd-name";
         topRow.append(platformColumnTitle);
 
         const discordColumnTitle = document.createElement("th");
         discordColumnTitle.innerText = "Discord user";
         discordColumnTitle.style.color = "var(--header-primary)";
-        // discordColumnTitle.className = "bd-name";
         topRow.append(discordColumnTitle);
 
         table.append(topRow);
@@ -205,6 +250,7 @@ const SettingsBuilder = {
         let saveTimeout;
         const inputListener = () => {
             clearTimeout(saveTimeout);
+
             // delete all entries in old usersMap
             for(const user of Object.keys(usersMap)) delete usersMap[user];
 
@@ -242,11 +288,9 @@ const SettingsBuilder = {
                     usersMap[discordValue] = [platformValue];
                 }
             }
-            console.log(usersMap);
 
             saveTimeout = setTimeout(() => {
                 platform.saveData();
-                console.log("saved data!");
             }, 500);
         }
 
@@ -278,7 +322,6 @@ const SettingsBuilder = {
             const platformInput = document.createElement("input");
             platformInput.className = "input-cIJ7To";
             platformInput.style.width = "100%";
-            // platformInput.id = "platformInput-" + id;
             platformInput.oninput = inputListener;
             if(platformValue) platformInput.value = platformValue;
             if(platformDatalist) platformInput.setAttribute("list", platformDatalist.id);
@@ -292,7 +335,6 @@ const SettingsBuilder = {
             const discordInput = document.createElement("input");
             discordInput.className = "input-cIJ7To";
             discordInput.style.width = "100%";
-            // discordInput.id = "column2-" + id;
             discordInput.oninput = inputListener;
             if(discordValue) discordInput.value = discordValue;
             if(discordDatalist) discordInput.setAttribute("list", discordDatalist.id);
@@ -365,7 +407,8 @@ class Steam extends Platform {
         return {
             enabled: this.enabled || false,
             apiKey: this.apiKey || "",
-            usersMap: this.discordToSteamIDs || {}
+            usersMap: this.discordToSteamIDs || {},
+            debug: this.debug || false
         }
     }
 
@@ -373,6 +416,7 @@ class Steam extends Platform {
         this.enabled = data.enabled || false;
         this.apiKey = data.apiKey || "";
         this.discordToSteamIDs = data.usersMap || {};
+        this.debug = data.debug || false;
     }
 
     async getPlayerSummaries(ids) {
@@ -380,7 +424,6 @@ class Steam extends Platform {
         const req = await fetch(url);
 
         if(req.statusCode === 403) {
-            this.enabled = false;
             if(this.apiKey) BdApi.alert("Your Steam API key is invalid! Steam has been disabled, reenable it in settings.");
             else BdApi.alert("You haven't provided a Steam API key!");
             this.destroy();
@@ -393,6 +436,7 @@ class Steam extends Platform {
         try {
             const json_data = JSON.parse(req.body);
             if (!json_data.response || !json_data.response.players) return;
+            this.log(json_data);
             for (const playerSummary of json_data.response.players) {
                 this.processPlayerSummary(playerSummary);
             }
@@ -408,7 +452,7 @@ class Steam extends Platform {
         if(summary.gameextrainfo) {
             const statuses = ["Offline", "Playing", "Busy", "Away", "Snoozed", "Looking to trade", "Looking to play"];
             const previousPresence = this.presenceCache[summary.steamid]
-            this.presenceCache[summary.steamid] = {
+            const presence = {
                 application_id: customRpcAppId,
                 name: summary.gameextrainfo,
                 details: `${statuses[summary.personastate]} on Steam`,
@@ -418,15 +462,18 @@ class Steam extends Platform {
                     large_image: "883490890377756682",
                     large_text: "Playing as " + summary.personaname
                 },
-                username: summary.personaname
+                username: summary.personaname,
+                priority: -1
             };
+            this.presenceCache[summary.steamid] = presence;
+            this.log(presence);
         } else {
             delete this.presenceCache[summary.steamid];
         }
     }
 
     updateCache() {
-        if(this.destroyed) return clearInterval(this.cacheUpdateinterval);
+        if(!this.enabled) return clearInterval(this.cacheUpdateinterval);
         try {
             const steam_ids = Object.values(this.discordToSteamIDs).flat();
 
@@ -448,20 +495,31 @@ class Steam extends Platform {
         const enabledSwitch = SettingsBuilder.enabledSwitch(this);
 
         // api key textbox
-        const textboxChange = (value) => this.apiKey = value;
-        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("API Key", "Your Steam API key", this.apiKey, textboxChange);
+        const textboxChange = (value) => {
+            this.apiKey = value;
+            if(this.enabled) {
+                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            }
+        }
+        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("API Key", "Your Steam API key. Get one at https://steamcommunity.com/dev/apikey", this.apiKey, textboxChange);
+        setTimeout(() => {
+            apiKeyTextbox.getElement().children[0].children[2].innerHTML = `Your Steam API key. Get one at <a href="https://steamcommunity.com/dev/apikey" target="_blank">https://steamcommunity.com/dev/apikey</a>`
+        }, 50);
 
         const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToSteamIDs, "Steam ID", /^\d+$/);
+        
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
 
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv);
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
     }
 
-    destroy() {
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.presenceCache = {};
         clearInterval(this.cacheUpdateinterval);
+        if(!pluginShutdown) this.saveData();
     }
 }
-
-platforms.push(Steam);
 
 
 /***************
@@ -496,7 +554,8 @@ class Hypixel extends Platform {
         return {
             enabled: this.enabled || false,
             apiKey: this.apiKey || "",
-            usersMap: this.discordToMinecraftUUIDs || {}
+            usersMap: this.discordToMinecraftUUIDs || {},
+            debug: this.debug || false
         }
     }
 
@@ -504,16 +563,20 @@ class Hypixel extends Platform {
         this.enabled = data.enabled || false;
         this.apiKey = data.apiKey || "";
         this.discordToMinecraftUUIDs = data.usersMap || {};
+        this.debug = data.debug || false;
     }
 
     getPresence(discord_id) {
         return super.getPresence(discord_id, this.discordToMinecraftUUIDs, this.presenceCache);
     }
 
-    destroy() {
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.presenceCache = {};
         clearInterval(this.cacheInterval);
         for(const timeout of this.timeouts)
             clearTimeout(timeout);
+        if(!pluginShutdown) this.saveData();
     }
 
     async fetchGames() {
@@ -541,7 +604,6 @@ class Hypixel extends Platform {
         const req = await fetch(url);
 
         if(req.statusCode === 403) {
-            this.enabled = false;
             if(this.apiKey) BdApi.alert("Your Hypixel API key is invalid! The Hypixel plugin has been disabled, reenable it in settings.");
             else BdApi.alert("You haven't provided a Hypixel API key!");
             this.destroy();
@@ -554,6 +616,7 @@ class Hypixel extends Platform {
         try {
             const json_data = JSON.parse(req.body);
             if(json_data.success && json_data.session.online) {
+                this.log(json_data);
                 this.getPlayerInfo(uuid, json_data.session);
             } else {
                 delete this.presenceCache[uuid];
@@ -581,6 +644,7 @@ class Hypixel extends Platform {
         try {
             const json_data = JSON.parse(req.body);
             if (json_data.success) {
+                this.log(json_data);
                 this.processPlayerData(uuid, json_data.player, session);
             } else {
                 console.error(json_data);
@@ -608,7 +672,8 @@ class Hypixel extends Platform {
                     large_image: "883490391964385352",
                     large_text: "Playing as " + player.displayname,
                 },
-                username: player.displayname
+                username: player.displayname,
+                priority: 1
             };
 
             if(session.map) {
@@ -616,7 +681,11 @@ class Hypixel extends Platform {
                 presence.assets.small_text = session.map;
             }
 
+            if(presence.state.toLowerCase().includes("lobby"))
+                presence.priority = -2;
+
             this.presenceCache[uuid] = presence;
+            this.log(presence);
         } catch(e) {
             console.error(e);
             console.error(player, session);
@@ -625,7 +694,7 @@ class Hypixel extends Platform {
     }
 
     updateCache() {
-        if(this.destroyed) return clearInterval(this.cacheInterval);
+        if(!this.enabled) return clearInterval(this.cacheInterval);
         try {
             const uuids = Object.values(this.discordToMinecraftUUIDs);
 
@@ -645,17 +714,22 @@ class Hypixel extends Platform {
         const enabledSwitch = SettingsBuilder.enabledSwitch(this);
 
         // api key textbox
-        const textboxChange = (value) => this.apiKey = value;
-        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("API Key", "Your Hypixel API key", this.apiKey, textboxChange);
+        const textboxChange = (value) => {
+            this.apiKey = value;
+            if(this.enabled) {
+                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            }
+        }
+        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("API Key", "Your Hypixel API key. Use the /api command in-game to get it.", this.apiKey, textboxChange);
 
         // uuid regex adapted from https://stackoverflow.com/a/14166194/6087491
         const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToMinecraftUUIDs, "Minecraft UUID", /^[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89aAbB][a-f0-9]{3}-?[a-f0-9]{12}$/);
 
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv);
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
+        
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
     }
 }
-
-platforms.push(Hypixel);
 
 /**************
  **  TWITCH  **
@@ -681,7 +755,7 @@ class Twitch extends Platform {
     start() {
         if(this.oauthKey) {
             this.getOnlineFriends();
-            this.interval = setInterval(this.getOnlineFriends, 30_000);
+            this.interval = setInterval(this.getOnlineFriends.bind(this), 60_000);
         }
     }
 
@@ -689,7 +763,8 @@ class Twitch extends Platform {
         return {
             enabled: this.enabled || false,
             oauthKey: this.oauthKey || "",
-            usersMap: this.discordToTwitchID || {}
+            usersMap: this.discordToTwitchID || {},
+            debug: this.debug || false
         }
     }
 
@@ -697,18 +772,18 @@ class Twitch extends Platform {
         this.enabled = data.enabled || false;
         this.oauthKey = data.oauthKey || "";
         this.discordToTwitchID = data.usersMap || {};
+        this.debug = data.debug || false;
     }
 
-    getPresence(discord_id) {
-        return super.getPresence(discord_id, this.discordToTwitchID, this.presenceCache);
-    }
-
-    destroy() {
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.presenceCache = {};
         clearInterval(this.interval);
+        if(!pluginShutdown) this.saveData();
     }
 
     async getOnlineFriends() {
-        if(this.destroyed || !this.oauthKey) return clearInterval(this.interval);
+        if(!this.enabled || !this.oauthKey) return this.destroy();
 
         const data = await fetch("https://gql.twitch.tv/gql", {
             method: "POST",
@@ -723,17 +798,30 @@ class Twitch extends Platform {
             if(data.body.length <= 2) return;
             const json_data = JSON.parse(data.body);
             if (json_data.status === 401) {
-                clearInterval(this.interval);
+                this.destroy();
                 console.error(json_data);
                 return err("Error 401 when fetching twitch friends!");
             }
+
+            if(json_data[0].errors) {
+                console.error(json_data);
+                if(json_data[0].errors[0].message === "service timeout") return;
+                console.error(data);
+                return err("Twitch friends request returned error!");
+
+            }
+
+            this.log(json_data);
+
+            const streamerList = this.extractStreamerList(json_data[0].data.currentUser.friends.edges);
+            const streamsMetadata = await this.fetchStreamsMetadata(streamerList);
 
             this.usersList = {
                 idToName: {},
                 nameToId: {}
             }
             for (const friend of json_data[0].data.currentUser.friends.edges) {
-                this.processFriend(friend.node);
+                this.processFriend(friend.node, streamsMetadata);
             }
         } catch (e) {
             console.error(e);
@@ -741,14 +829,61 @@ class Twitch extends Platform {
             err("Couldn't JSON Parse Twitch response!", data);
         }
     }
+    
+    extractStreamerList(friend_edges) {
+        const streamerLogins = [];
+        for(const edge of friend_edges) {
+            if(edge.node.activity &&
+                edge.node.activity.type === "WATCHING" &&
+                edge.node.activity.user.stream &&
+                edge.node.activity.user.login &&
+                !streamerLogins.includes(edge.node.activity.user.login))
+                streamerLogins.push(edge.node.activity.user.login)
+        }
+        return streamerLogins;
+    }
+    
+    async fetchStreamsMetadata(streamerLogins) {
+        const requestBody = [];
+        for(const streamerLogin of streamerLogins) {
+            requestBody.push({
+                "operationName":"StreamMetadata",
+                "variables": {"channelLogin": streamerLogin},
+                "extensions":{"persistedQuery":{"version":1,"sha256Hash":"059c4653b788f5bdb2f5a2d2a24b0ddc3831a15079001a3d927556a96fb0517f"}}});
+        }
+        
+        const data = await fetch("https://gql.twitch.tv/gql", {
+            method: "POST",
+            headers: {
+                "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+                "Authorization": "OAuth " + this.oauthKey
+            },
+            body: JSON.stringify(requestBody)
+        });
+        const body = JSON.parse(data.body);
+        
+        const streamsMetadata = {};
+        for(let i = 0; i < body.length; i++) {
+            const stream = body[i].data.user;
+            streamsMetadata[streamerLogins[i]] = {
+                title: stream.lastBroadcast.title,
+                viewers: stream.stream.viewersCount,
+                start: + new Date(stream.stream.createdAt),
+                profilePicture: stream.profileImageURL//.replace("70x70", "300x300") // 600x600 also works
+            }
+        }
+        
+        return streamsMetadata;
+    }
 
-    processFriend(friend) {
+    processFriend(friend, streamsMetadata) {
         // add friend to usersList
         this.usersList.idToName[friend.id] = friend.login;
         this.usersList.nameToId[friend.login] = friend.id;
 
         if(friend.activity) {
-            const previousPresence = this.presenceCache[friend.id];
+            let previousPresence = this.presenceCache[friend.id];
+            if(previousPresence) previousPresence = previousPresence();
             // todo fetch the title of the stream, that could be cool
             if(friend.activity.type === "WATCHING") {
                 if(!friend.activity.user.stream) // they are watching someone that is no longer streaming (their presence hasn't updated yet)
@@ -756,25 +891,33 @@ class Twitch extends Platform {
 
                 const isWatchingSamePerson = previousPresence && previousPresence.details.substr(9) === friend.activity.user.displayName;
                 const away = friend.availability === "AWAY";
+                const metadata = streamsMetadata[friend.activity.user.login];
 
                 // the way type 3 (watching) presences are rendered is weird
                 // the large_text is shown both when hovering the image but also underneath the details (this is because that's how spotify Listening activities are rendered)
                 // in the "Active Now" tab in the friends list it only says "watching a stream" instead of rendering the whole activity like type 0 (playing) does
                 // the only reason type 3 exists in the first place is for YouTube Together as far as I can tell, so not much thought has been put into it
-                this.presenceCache[friend.id] = {
+
+                // also timestamps (01:23:45 elapsed) aren't rendered, so the presences are stored as functions
+                // when the presence is requested, the function is called and parses the current time into the large_text
+
+                this.presenceCache[friend.id] = () => {return {
                     application_id: away ? customRpcAppId : null,
                     name: "Twitch",
                     details: `Watching ${friend.activity.user.displayName}`,
-                    state: friend.activity.user.stream.game.displayName,
+                    state: metadata.title,
                     type: 3,
                     timestamps: {start: isWatchingSamePerson ? previousPresence.timestamps.start : +new Date()},
                     assets: {
                         large_image: away ? "899072297216913449" : "twitch:" + friend.activity.user.login,
-                        large_text: (away ? "Away as " : "As ") + friend.displayName
+                        large_text: `${friend.activity.user.stream.game.displayName} | 👤 ${metadata.viewers} | 🕐 ${this.parseStartTime(metadata.start)}`,
+                        small_image: "url:" + metadata.profilePicture,
+                        small_text: friend.activity.user.displayName
                     },
-                    username: friend.displayName
-                }
-            } else if(friend.activity.type === "STREAMING") this.presenceCache[friend.id] = {
+                    username: friend.displayName,
+                    priority: -1
+                }}
+            } else if(friend.activity.type === "STREAMING") this.presenceCache[friend.id] = () => {return {
                 name: "Twitch",
                 state: friend.activity.stream.game.displayName,
                 type: 1,
@@ -784,11 +927,32 @@ class Twitch extends Platform {
                 },
                 url: "https://twitch.tv/" + friend.login,
                 id: "",
-                username: friend.displayName
-            }
+                username: friend.displayName,
+                priority: 3
+            }}
+
+            this.log(this.presenceCache[friend.id]());
         } else {
             delete this.presenceCache[friend.id];
         }
+    }
+
+    parseStartTime(start) {
+        let streamingFor = Date.now() - start;
+        streamingFor -= streamingFor % 5000; // to mitigate discord's weird polling/rendering frequency
+        const sec = Math.floor(streamingFor / 1000 % 60),
+            min = Math.floor(streamingFor / 1000 / 60 % 60),
+            hour = Math.floor(streamingFor / 1000 / 60 / 60);
+
+        const p = n => n.toString().padStart(2, '0'); // 5:3 -> 05:03
+
+        if(hour) return `${hour}:${p(min)}:${p(sec)}`;
+        return `${p(min)}:${p(sec)}`;
+    }
+
+    getPresence(discord_id) {
+        const presenceFunctions = super.getPresence(discord_id, this.discordToTwitchID, this.presenceCache);
+        if(presenceFunctions) return presenceFunctions.map(presenceFunction => presenceFunction());
     }
 
     getSettings(discordUserList, discordUsersDatalist) {
@@ -796,32 +960,26 @@ class Twitch extends Platform {
         const enabledSwitch = SettingsBuilder.enabledSwitch(this);
 
         // api key textbox
-        const textboxChange = (value) => this.oauthKey = value;
-        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("OAuth Key", "Your Twitch OAuth key", this.oauthKey, textboxChange);
+        const textboxChange = (value) => {
+            this.oauthKey = value;
+            if(this.enabled) {
+                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            }
+        }
+        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("OAuth Key", "Your Twitch OAuth key. I should write a guide on how to get this at some point", this.oauthKey, textboxChange);
 
         const datalist = SettingsBuilder.createDatalist("twitch", Object.keys(this.usersList.nameToId));
         const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, this.usersList, discordUserList, this.discordToTwitchID, "Twitch username", /^\d+$/);
 
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv);
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
+        
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
     }
 }
-platforms.push(Twitch);
 
 /************
  **  RIOT  **
  ************/
-
-const riotDebug = true; // change this to not output riot debug to console
-const riotLog = s => {
-    if(!riotDebug) return;
-    if(typeof s === "object") console.log("RIOT:", s);
-    else console.log("RIOT: " + s);
-}
-
-const riotHeaders = {
-    // "cloudflare bitches at us without a user-agent" - molenzwiebel
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36",
-}
 
 class Riot extends Platform {
 
@@ -831,11 +989,13 @@ class Riot extends Platform {
         this.riotPUUIDToUsername = {};
         this.riotPUUIDToSummonerName = {};
 
-        this.valorant = new Valorant(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName);
-        this.lol = new Lol(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName);
-        this.wildRift = new WildRift(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName);
+        const log = this.log.bind(this);
 
-        this.loadData()
+        this.valorant = new Valorant(this.riotPUUIDToUsername, log);
+        this.lol = new Lol(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName, log);
+        this.wildRift = new WildRift(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName, log);
+
+        this.loadData();
         if (this.enabled) {
             this.start();
         }
@@ -853,7 +1013,8 @@ class Riot extends Platform {
         return {
             enabled: this.enabled || false,
             cookies: this.cookies || "",
-            usersMap: this.discordToRiotPUUIDs || {}
+            usersMap: this.discordToRiotPUUIDs || {},
+            debug: this.debug || false
         }
     }
 
@@ -861,6 +1022,7 @@ class Riot extends Platform {
         this.enabled = data.enabled || false;
         this.cookies = data.cookies || "";
         this.discordToRiotPUUIDs = data.usersMap || {};
+        this.debug = data.debug || false;
     }
 
 
@@ -884,21 +1046,24 @@ class Riot extends Platform {
         if(presences) return presences;
     }
 
-    destroy() {
-        this.destroyed = true;
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.presenceCache = {};
         clearInterval(this.reconnectInterval);
         clearTimeout(this.heartbeat);
         if(this.socket) {
             this.socket.write("</stream:stream>");
             this.socket.destroy();
         }
+        if(!pluginShutdown) this.saveData();
     }
 
     async refreshToken(cookies) {
         const res = await fetch("https://auth.riotgames.com/authorize?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in&client_id=play-valorant-web-prod&response_type=token%20id_token&scope=account%20ban%20link%20lol%20offline_access%20openid&nonce=123", {
             method: "GET",
             headers: {
-                ...riotHeaders,
+                // "cloudflare bitches at us without a user-agent" - molenzwiebel
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36",
                 "cookie": cookies
             },
         });
@@ -932,8 +1097,9 @@ class Riot extends Platform {
     }
 
     getCookiesFromLauncher() {
+        // I doubt this works on Mac
         const filepath = process.env.LOCALAPPDATA + "/Riot Games/Riot Client/Data/RiotClientPrivateSettings.yaml";
-        
+
         let fileContents;
         try {
             fileContents = fs.readFileSync(filepath).toString();
@@ -1042,7 +1208,7 @@ class Riot extends Platform {
 
             const sock = tls.connect(port, address, {}, () => {
                 try {
-                    riotLog("Connected!");
+                    this.log("Connected!");
 
                     clearInterval(this.reconnectInterval);
                     this.reconnectInterval = null;
@@ -1056,7 +1222,9 @@ class Riot extends Platform {
 
             const send = data => {
                 try {
-                    if(sock.readyState === "open") sock.write(data, "utf8", () => riotLog("-> " + data));
+                    if(sock.readyState === "open") sock.write(data, "utf8", () => {
+                        if(data !== " ") this.log("-> " + data)
+                    });
 
                     clearTimeout(this.heartbeat);
                     this.heartbeat = setTimeout(() => send(" "), 150_000);
@@ -1072,7 +1240,7 @@ class Riot extends Platform {
             sock.on("data", data => {
                 try {
                     data = data.toString();
-                    riotLog("<- " + data);
+                    this.log("<- " + data);
                     if(messages.length > 0) sendNext();
 
                     // handle riot splitting messages into multiple parts
@@ -1089,16 +1257,37 @@ class Riot extends Platform {
                         // check for self closing tag eg <presence />
                         if(data.search(/<[^<>]+\/>/) === 0) data = data.replace("/>", `></${firstTagName}>`);
 
-                        const closingTagIndex = data.indexOf(`</${firstTagName}>`);
+                        let closingTagIndex = data.indexOf(`</${firstTagName}>`);
                         if(closingTagIndex === -1) {
                             // message is split, we need to wait for the end
                             bufferedMessage = data;
                             break;
                         }
 
+                        // check for tag inside itself eg <a><a></a></a>
+                        // this happens when you send a message to someone
+                        let containedTags = 0;
+                        let nextTagIndex = data.indexOf(`<${firstTagName}`, 1);
+                        while(nextTagIndex !== -1 && nextTagIndex < closingTagIndex) {
+                            containedTags++;
+                            nextTagIndex = data.indexOf(`<${firstTagName}`, nextTagIndex + 1);
+                        }
+
+                        while(containedTags > 0) {
+                            closingTagIndex = data.indexOf(`</${firstTagName}>`, closingTagIndex + 1);
+                            containedTags--;
+                        }
+
                         const firstTagEnd = closingTagIndex + `</${firstTagName}>`.length;
                         bufferedMessage = data.substr(firstTagEnd); // will be empty string if only one tag
                         data = data.substr(0, firstTagEnd);
+
+                        /* ok so if someone is smart they can perform what I call "presence injection" by sending you
+                         * a DM on Riot Games that goes something like
+                         * "</presence><presence from="...">[fake presence]"
+                         * they could also override the friends list that the plugin stores, and they can force
+                         * the plugin to disconnect and reconnect, but that's about it really.
+                         */
 
                         if(firstTagName === "presence") {
                             this.valorant.processXMLData(data);
@@ -1113,12 +1302,13 @@ class Riot extends Platform {
                         } else if(firstTagName === "failure") {
                             const errorStartIndex = data.indexOf('>') + 1;
                             const error = data.substring(errorStartIndex, closingTagIndex);
-                            if(error.includes("token-expired")) {
-                                this.destroy();
-                                this.start();
+                            if(data.includes("token-expired")) {
+                                // BdApi.alert("token expired!")
+                                this.log(error);
+                                this.restart();
                             } else {
                                 console.error(data);
-                                err("Riot XMPP Connection failed! " + error);
+                                err("Riot XMPP Connection failed! " + data);
                                 this.destroy();
                             }
                         }
@@ -1132,7 +1322,7 @@ class Riot extends Platform {
 
             sock.on("error", console.error);
             sock.on("close", () => {
-                if(this.destroyed) return riotLog("Socket disconnected!");
+                if(!this.enabled) return this.log("Socket disconnected!");
 
                 console.error("Riot Connection Closed! Retrying in 5 seconds...");
 
@@ -1156,7 +1346,7 @@ class Riot extends Platform {
 
         const access_token = await this.refreshToken(this.cookies);
         if(!access_token.startsWith('e')) {
-            riotLog("Riot Access Token: " + access_token);
+            this.log("Riot Access Token: " + access_token);
             return err("Invalid Riot access token! Most likely your cookies are either invalid or expired.");
         }
 
@@ -1185,7 +1375,7 @@ class Riot extends Platform {
         const tagline = data.substring(taglineIndex, data.indexOf("'/>", taglineIndex));
 
         this.riotPUUIDToUsername[puuid] = `${username}#${tagline}`;
-        riotLog("My username is " + this.riotPUUIDToUsername[puuid]);
+        this.log("My username is " + this.riotPUUIDToUsername[puuid]);
 
         const lolTagIndex = data.indexOf("<lol ");
 
@@ -1194,7 +1384,7 @@ class Riot extends Platform {
             const lolName = data.substring(lolNameIndex, data.indexOf("'", lolNameIndex));
 
             this.riotPUUIDToSummonerName[puuid] = lolName
-            riotLog("My summoner name is " + lolName);
+            this.log("My summoner name is " + lolName);
         }
     }
 
@@ -1229,34 +1419,35 @@ class Riot extends Platform {
             }
 
         }
-        riotLog(this.riotPUUIDToUsername);
-        riotLog(this.riotPUUIDToSummonerName);
+        this.log(this.riotPUUIDToUsername);
+        this.log(this.riotPUUIDToSummonerName);
     }
 
     getSettings(discordUserList, discordUsersDatalist) {
         // enabled switch
         const enabledSwitch = SettingsBuilder.enabledSwitch(this);
 
+
         // cookies textbox
-        const textboxChange = (value) => this.cookies = value;
-        const cookiesTextbox = new ZeresPluginLibrary.Settings.Textbox("Auth Cookies", "Your auth.riotgames.com cookies", this.cookies, textboxChange).getElement();
+        const textboxChange = (value) => {
+            this.cookies = value;
+            if(this.enabled) {
+                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            }
+        }
+        const buttonClick = () => {
+            const [success, cookies] = this.getCookiesFromLauncher();
+            if(success) {
+                this.cookies = cookies;
+                cookiesTextbox.children[0].children[1].children[0].value = cookies;
+            } else {
+                console.error(cookies);
+            }
+        }
+        const cookiesTextbox = SettingsBuilder.textboxWithButton("Auth Cookies", "Your auth.riotgames.com cookies. Will only work if you're currently logged in with 'Remember me', and until you log out.",
+            this.cookies, textboxChange, {}, "Fetch cookies from launcher", buttonClick);
         setTimeout(() => {
             cookiesTextbox.children[0].children[1].children[0].removeAttribute("maxlength");
-
-            const fetchCookiesButton = document.createElement("button");
-            fetchCookiesButton.innerText = "Fetch cookies from launcher";
-            fetchCookiesButton.classList.add("bd-button");
-            fetchCookiesButton.style.marginTop = "10px";
-            fetchCookiesButton.onclick = () => {
-                const [success, cookies] = this.getCookiesFromLauncher();
-                if(success) {
-                    this.cookies = cookies;
-                    cookiesTextbox.children[0].children[1].children[0].value = cookies;
-                } else {
-                    console.error(cookies);
-                }
-            }
-            cookiesTextbox.children[0].insertBefore(fetchCookiesButton, cookiesTextbox.children[0].children[2]);
         }, 50);
 
         const usersList = {
@@ -1269,11 +1460,11 @@ class Riot extends Platform {
         const datalist = SettingsBuilder.createDatalist("riot", Object.keys(usersList.nameToId));
         const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToRiotPUUIDs, "Riot username", /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
 
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, cookiesTextbox, userMapDiv);
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
+
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, cookiesTextbox, userMapDiv, debugSwitch);
     }
 }
-
-platforms.push(Riot);
 
 /****************
  **  VALORANT  **
@@ -1282,10 +1473,12 @@ platforms.push(Riot);
 const valRpcAppID = "811469787657928704"; // https://github.com/colinhartigan/valorant-rpc
 
 class Valorant {
-    constructor(riotPUUIDToUsername) {
+    constructor(riotPUUIDToUsername, log) {
         this.riotPUUIDToUsername = riotPUUIDToUsername;
+        this.log = log;
 
         // constants
+        // todo get these from valorant-api
         this.gamemodes = {
             "newmap": "New Map",
             "competitive": "Competitive",
@@ -1321,7 +1514,7 @@ class Valorant {
         ]
 
         this.presenceCache = {};
-        this.assets = {}; // https://discord.com/api/v9/oauth2/applications/811469787657928704/assets
+        this.assets = {};
     }
 
     async fetchRpcAssets() {
@@ -1346,7 +1539,8 @@ class Valorant {
                     const presenceData = JSON.parse(atob(base64Data));
                     this.processPresenceData(puuid, presenceData, timestamp);
                 } catch (e) {
-                    debugger
+                    console.error(data);
+                    err("Could not JSON parse Valorant presence data! " + e);
                 }
             } else {
                 delete this.presenceCache[puuid];
@@ -1357,7 +1551,7 @@ class Valorant {
     }
 
     processPresenceData(puuid, presenceData, timestamp) {
-        riotLog(presenceData)
+        this.log(presenceData);
 
         try {
             const parseDate = s => {
@@ -1383,6 +1577,16 @@ class Valorant {
                 const modeName = this.gamemodes[presenceData.queueId];
                 return modeName || presenceData.queueId;
             }
+            /* A bit of backstory:
+             * On 21/09/2021 Riot removed map data from the presence, so you could no longer
+             * know which map your friend was playing on.
+             * Except, they forgot to remove it during agent select. the plugin would store
+             * the map data when they were in agent select, and "remember" it during the
+             * actual match, even though Riot didn't send it anymore.
+             * (This wouldn't work if the plugin was started mid-match or for deathmatch).
+             * Then on 20/10/2021, they mysteriously put it back. No idea if it's here to stay,
+             * but having the extra code doesn't hurt :)
+             */
             const getMapName = () => {
                 const mapName = this.maps[map] || map;
                 if(mapName) return mapName;
@@ -1443,7 +1647,8 @@ class Valorant {
                     small_image: this.assets["rank_" + presenceData.competitiveTier] || this.assets["rank_0"],
                     small_text: `${this.ranks[presenceData.competitiveTier]}${presenceData.leaderboardPosition > 0 ? ` #${presenceData.leaderboardPosition}` : ""} | LVL ${presenceData.accountLevel}`
                 },
-                username: username
+                username: username,
+                priority: 2
             };
             let presence = {};
 
@@ -1457,7 +1662,7 @@ class Valorant {
                         if(presenceData.partyState === "CUSTOM_GAME_SETUP") return `Setting Up Custom Game`;
                         return `${presenceData.partyState} (?) - ${getGamemode()}`;
                     }
-                    const menusGetLargeText = () => (presenceData.isIdle ? "Away" : "In Lobby") + (username ? " | " + username : "");
+                    const menusGetLargeText = () => (presenceData.isIdle ? "Away" : "In Lobby");
 
                     presence = {
                         ...presenceBoilerplate,
@@ -1467,6 +1672,7 @@ class Valorant {
                             large_image: presenceData.isIdle ? this.assets["game_icon_yellow"] : presenceData.partyState === "CUSTOM_GAME_SETUP" ? getMapIcon(presenceData.matchMap) : this.assets["game_icon"],
                             large_text: menusGetLargeText(),
                         },
+                        priority: -2,
                     }
                     break;
                 case "PREGAME":
@@ -1484,14 +1690,13 @@ class Valorant {
                         assets: {
                             ...presenceBoilerplate.assets,
                             large_image: getMapIcon(),
-                            large_text: (presenceData.isIdle ? "Away" : getMapName()) + (username ? " | " + username : ""),
+                            large_text: (presenceData.isIdle ? "Away" : getMapName())
                         }
                     }
 
-
-                    if(pregameGetDetails().includes("Match Found")) // match found 5sec timer
+                    if(pregameGetDetails().endsWith("Match Found")) // match found 5sec timer
                         presence.timestamps.end = timestamp + 5000;
-                    else if(pregameGetDetails().includes("Agent Select")) // start 75sec countdown once agent select has loaded (~79sec including loading time)
+                    else if(pregameGetDetails().endsWith("Agent Select")) // start 75sec countdown once agent select has loaded (~79sec including loading time)
                         presence.timestamps.end = timestamp + 79000;
                     break;
                 case "INGAME":
@@ -1522,14 +1727,14 @@ class Valorant {
                         assets: {
                             ...presenceBoilerplate.assets,
                             large_image: getMapIcon(),
-                            large_text: (presenceData.isIdle ? "Away" : getMapName()) + (username ? " | " + username : ""),
+                            large_text: (presenceData.isIdle ? "Away" : getMapName()) // + (username ? " | " + username : ""),
                         }
                     }
                     break;
             }
 
             this.presenceCache[puuid] = presence;
-            riotLog(presence);
+            this.log(presence);
         } catch (e) {
             err(e);
         }
@@ -1550,14 +1755,14 @@ const lolShowSkinName = true;
 const lolRpcAppId = "899030985855860756";
 
 class Lol {
-    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName) {
+    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName, log) {
         this.riotPUUIDToUsername = riotPUUIDToUsername;
         this.riotPUUIDToSummonerName = riotPUUIDToSummonerName;
 
         this.gameVersion = ""; // will be overridden by lolGetLatestVersion()
         this.champions = {};
         this.skins = {};
-        this.assets = { // to be filled in by lolFetchRpcAssets()
+        this.assets = { // to be filled in by fetchRpcAssets()
             logo_lol: "899053983879008266",
             logo_tft: "899054046294462494",
             champions: {},
@@ -1566,13 +1771,20 @@ class Lol {
         this.queues = { // manually adding in gamemodes not in riot json
             1130: {
                 "queueId": 1130,
-                "map": "???",
-                "description": "Ranked Teamfight Tactics Turbo",
+                "map": "Convergence",
+                "description": "Teamfight Tactics Hyper Roll",
+                "notes": "Added in manually"
+            },
+            1150: {
+                "queueId": 1150,
+                "map": "Convergence",
+                "description": "Teamfight Tactics Double Up",
                 "notes": "Added in manually"
             }
         }
 
         this.presenceCache = {};
+        this.log = log;
     }
 
 
@@ -1590,10 +1802,11 @@ class Lol {
                     try {
                         const presenceData = JSON.parse(presenceHalfParsed);
                         const timestamp = Riot.extractDataFromXML(lolData, "s.t");
-                        riotLog(presenceData);
+                        this.log(presenceData);
                         this.processPresenceData(puuid, presenceData, timestamp);
                     } catch(e) {
-                        debugger
+                        console.error(data);
+                        err("Could not JSON parse Lol presence data!" + e);
                     }
                 }
             } else {
@@ -1670,20 +1883,22 @@ class Lol {
             const username = this.riotPUUIDToSummonerName[puuid] || this.riotPUUIDToUsername[puuid];
             timestamp = Math.max(data.timeStamp, timestamp) || data.timeStamp || timestamp;
 
-            const getGamemode = (prefix = "", suffix = "") => {
-                // add prefix and suffix
-                const p_s = s => `${prefix}${s}${suffix}`;
+            let gamemode, map;
+            if(data.gameQueueType === "PRACTICETOOL") [gamemode, map] = ["Practice Tool", "Summoner's Rift"];
+            else if (data.queueId && this.queues[data.queueId]) {
+                const gamemodeData = this.queues[data.queueId];
+                [gamemode, map] = [gamemodeData.description, gamemodeData.map];
+            } else if (data.queueId === "-1") gamemode = "Custom";
+            else if (data.gameStatus === "outOfGame") gamemode = "In the Lobby"
+            else gamemode = `(?) ${data.queueId} ${data.gameQueueType} ${data.gameStatus}`;
 
-                if (data.queueId && this.queues[data.queueId]) return p_s(this.queues[data.queueId].description);
-                if (data.queueId === "-1") return p_s("Custom");
-                if (data.gameStatus === "outOfGame") return "In The Lobby";
-                return `(?) ${prefix}${data.gameQueueType} ${data.gameStatus}${suffix}`
-            }
+            const previousPresence = this.presenceCache[puuid];
 
             let presenceBoilerplate = {
                 application_id: lolRpcAppId,
                 name: data.gameMode === "TFT" ? "Teamfight Tactics" : "League of Legends",
                 type: 0,
+                details: gamemode,
                 assets: {
                     large_image: data.gameMode === "TFT" ? this.assets.logo_tft : this.assets.logo_lol,
                     large_text: `Level ${data.level} | Mastery ${data.masteryScore}`,
@@ -1694,7 +1909,8 @@ class Lol {
                 timestamps: {
                     start: timestamp
                 },
-                username: username
+                username: username,
+                priority: 2
             };
             let presence;
 
@@ -1713,22 +1929,40 @@ class Lol {
                 }
             }
 
-            if (data.gameStatus === "outOfGame") {
+            // type 5 is "Competing in"
+            // it would be suitable for clashes but it hides the time elapsed/remaining so it's not worth it
+            /*if(data.queueId === "700") {
+                presenceBoilerplate.type = 5;
+            }*/
+
+            if (data.gameStatus !== "inGame" && ["SCOUTING", "LOCKED_IN"].includes(data.clashTournamentState)) {
                 presence = {
                     ...presenceBoilerplate,
-                    details: getGamemode(),
-                    state: "In the Main Menu"
+                    //type: 5,
+                    details: "Clash",
+                    state: data.clashTournamentState === "SCOUTING" ? "Scouting" : "Locked In"
                 }
+            } else if (data.gameStatus === "outOfGame") {
+                presence = {
+                    ...presenceBoilerplate,
+                    details: "In the Main Menu",
+                    priority: -2,
+                }
+                if(previousPresence && (previousPresence.details === "In the Main Menu" || previousPresence.state === "In the Lobby"))
+                    presence.timestamps.start = previousPresence.timestamps.start;
             } else if (data.gameStatus.startsWith("hosting_")) {
                 presence = {
                     ...presenceBoilerplate,
-                    details: getGamemode(),
-                    state: "In the Lobby"
+                    state: "In the Lobby",
+                    priority: -2
                 }
+                if(data.gameStatus === "hosting_Custom")
+                    presence.details = "Custom";
+                if(previousPresence && (previousPresence.details === "In the Main Menu" || previousPresence.state === "In the Lobby"))
+                    presence.timestamps.start = previousPresence.timestamps.start;
             } else if (data.gameStatus === "inQueue") {
                 presence = {
                     ...presenceBoilerplate,
-                    details: getGamemode(),
                     state: "In Queue",
                     timestamps: {
                         start: data.timeStamp
@@ -1737,7 +1971,6 @@ class Lol {
             } else if (data.gameStatus === "championSelect") {
                 presence = {
                     ...presenceBoilerplate,
-                    details: getGamemode(),
                     state: "In Champion Select"
                 }
             } else if (data.gameStatus === "inGame") {
@@ -1752,26 +1985,20 @@ class Lol {
                 }
                 presence = {
                     ...presenceBoilerplate,
-                    details: getGamemode(),
-                    // state: "In Game",
+                    state: `In Game (${map})`,
                     timestamps: {
                         start: data.timeStamp
                     },
                     assets: {
                         ...presenceBoilerplate.assets,
                         large_image: champion ? inGameGetLargeImage() : presenceBoilerplate.assets.large_image,
-                        large_text: champion ? await inGameGetLargeText() : null
+                        large_text: champion ? await inGameGetLargeText() : presenceBoilerplate.assets.large_text
                     }
                 }
             }
             if (presence) {
-                // do not update timestamp if previous presence is the same
-                const previousPresence = this.presenceCache[puuid];
-                if(previousPresence && presence.details.startsWith(previousPresence.details.split(' - ')[0]))
-                    presence.timestamps.start = previousPresence.timestamps.start;
-
                 this.presenceCache[puuid] = presence;
-                riotLog(presence);
+                this.log(presence);
             }
         } catch (e) {
             err(e);
@@ -1789,8 +2016,11 @@ class Lol {
  *****************/
 
 class WildRift {
-    constructor() {
+    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName, log) {
+        this.riotPUUIDToUsername = riotPUUIDToUsername;
+        this.riotPUUIDToSummonerName = riotPUUIDToSummonerName;
         this.presenceCache = {};
+        this.log = log;
     }
 
     processXMLData(data) {
@@ -1800,13 +2030,14 @@ class WildRift {
             // extract wild rift presence
             const wrData = Riot.extractDataFromXML(data, "wildrift");
             if(wrData) {
-                riotLog(wrData);
+                this.log(wrData);
                 try {
                     const timestamp = parseInt(Riot.extractDataFromXML(wrData, "s.t"));
                     const username = Riot.extractDataFromXML(data, "m");
                     this.processPresenceData(puuid, timestamp, username);
                 } catch (e) {
-                    debugger
+                    console.error(wrData);
+                    err("Could not parse Wild Rift presence data!" + e);
                 }
             } else {
                 delete this.presenceCache[puuid];
@@ -1817,6 +2048,8 @@ class WildRift {
     }
 
     processPresenceData(puuid, timestamp, username) {
+        username = username || this.riotPUUIDToSummonerName[puuid] || this.riotPUUIDToUsername[puuid];
+
         let presence = {
             application_id: customRpcAppId,
             name: "League of Legends: Wild Rift",
@@ -1828,11 +2061,12 @@ class WildRift {
             timestamps: {
                 start: timestamp
             },
-            username: username
+            username: username,
+            priority: 2
         };
 
         this.presenceCache[puuid] = presence;
-        riotLog(presence);
+        this.log(presence);
     }
 
     getPresence(puuid) {
@@ -1845,14 +2079,6 @@ class WildRift {
  **  EPIC  **
  ************/
 
-const epicDebug = true; // change this to not output epic debug to console
-
-const epicLog = s => {
-    if(!epicDebug) return;
-    if(typeof s === "object") console.log("EPIC:", s);
-    else console.log("EPIC: " + s);
-};
-
 class Epic extends Platform {
     constructor() {
         super("epic");
@@ -1862,6 +2088,9 @@ class Epic extends Platform {
 
         this.epicIdToDisplayName = {};
 
+        this.fortniteGamemodes = {};
+        this.fortniteRpcAppId = "432980957394370572";
+
         this.loadData();
         if(this.enabled) {
             this.start();
@@ -1869,9 +2098,13 @@ class Epic extends Platform {
     }
 
     async start() {
+        if(!this.authData.refresh) {
+            this.enabled = false;
+            return this.destroy();
+        }
         const success = await this.authenticate();
         if(success) {
-            this.fetchFriendsList();
+            await Promise.all([this.fetchFriendsList(), this.fetchFortniteGamemodes(), this.fetchFortniteAssets()]);
             this.establishXMPPConnection(this.authData.token);
         } else {
             this.enabled = false;
@@ -1883,7 +2116,8 @@ class Epic extends Platform {
         return {
             enabled: this.enabled || false,
             authData: this.authData || {},
-            usersMap: this.discordToEpicID || {}
+            usersMap: this.discordToEpicID || {},
+            debug: this.debug || false
         }
     }
 
@@ -1891,19 +2125,49 @@ class Epic extends Platform {
         this.enabled = data.enabled || false;
         this.authData = data.authData || {};
         this.discordToEpicID = data.usersMap || {};
+        this.debug = data.debug || false;
     }
 
     getPresence(discord_id) {
         return super.getPresence(discord_id, this.discordToEpicID, this.presenceCache);
     }
 
-    destroy() {
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.presenceCache = {};
         clearTimeout(this.refreshTimeout);
         clearInterval(this.reconnectInterval);
         clearTimeout(this.heartbeat);
         if(this.socket) {
             this.socket.send("</stream:stream>");
             this.socket.close(1000);
+        }
+        if(!pluginShutdown) this.saveData();
+    }
+
+    restart() {
+        this.destroy();
+        this.enabled = true;
+        setTimeout(this.start.bind(this), 500); // sockets take a while to close
+    }
+
+    async fetchFortniteGamemodes() {
+        const req = await fetch("https://fortnite-api.com/v1/playlists"); // big thanks to Officer and his excellent API
+        const json = JSON.parse(req.body);
+        for(const gamemode of json.data) {
+            this.fortniteGamemodes[gamemode.id] = {
+                name: gamemode.name,
+                maxSquadSize: gamemode.maxSquadSize,
+                maxPlayers: gamemode.maxPlayers
+            }
+        }
+    }
+
+    async fetchFortniteAssets() {
+        const req = await fetch(`https://discord.com/api/v9/oauth2/applications/${this.fortniteRpcAppId}/assets`);
+        const json = JSON.parse(req.body);
+        for(const asset of json) {
+            if(asset.name === "fortnite") this.fortniteLogoAssetId = asset.id;
         }
     }
 
@@ -1924,8 +2188,10 @@ class Epic extends Platform {
         if(this.authData.refresh) {
             if(this.authData.token) {
                 const expiry = this.getTokenExpiry(this.authData.token);
+                this.log("Token expiring at " + expiry);
                 if(expiry - new Date() > 300_000) {
                     // use the token
+                    // todo handle the token being invalid (e.g. in case of password reset)
                     this.setupRefreshTimeout();
                     return true;
                 }
@@ -1942,7 +2208,7 @@ class Epic extends Platform {
     }
 
     async refreshToken() {
-        epicLog("Refreshing token...");
+        this.log("Refreshing token...");
 
         // check refresh token is still valid
         const refreshExpiry = this.decodeJWT(this.authData.refresh).exp * 1000;
@@ -1967,13 +2233,14 @@ class Epic extends Platform {
             err("Could not refresh token! " + errorMessage);
             return false;
         }
-        epicLog("Refreshed token as " + authData.displayName);
 
         this.authData = {
             token: authData.access_token,
             refresh: authData.refresh_token
         }
         this.saveData();
+
+        this.log("Refreshed token as " + authData.displayName);
 
         return true;
     }
@@ -1995,7 +2262,7 @@ class Epic extends Platform {
             err("EPIC: Could not redeem exchange code! " + authData.errorMessage);
             return false;
         }
-        epicLog("Redeemed exchange code as " + authData.displayName);
+        this.log("Redeemed exchange code as " + authData.displayName);
 
         this.authData = {
             token: authData.access_token,
@@ -2022,42 +2289,78 @@ class Epic extends Platform {
             err("Could not redeem auth code! " + authData.errorMessage);
             return false;
         }
-        epicLog("Redeemed auth code as " + authData.displayName);
+        this.log("Redeemed auth code as " + authData.displayName);
 
         this.authData = {
             token: authData.access_token,
             refresh: authData.refresh_token
         }
+
+        this.restart();
+
         return true;
     }
 
     setupRefreshTimeout() {
         const tokenExpiry = this.decodeJWT(this.authData.token).exp * 1000;
-        this.refreshTimeout = setTimeout(this.refreshToken, tokenExpiry - new Date() - 300_000);
+        this.refreshTimeout = setTimeout(this.refreshToken.bind(this), tokenExpiry - new Date() - 300_000);
     }
 
     async fetchFriendsList() {
+        // get friends list
         const req = await fetch(`https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/${this.getID(this.authData.token)}/summary?displayNames=true`, {
             headers: {
                 Authorization: "Bearer " + this.authData.token
             }
         });
         const json = JSON.parse(req.body);
-        for(const friend of json.friends) {
-            this.epicIdToDisplayName[friend.accountId] = friend.displayName;
+
+        if(req.statusCode !== 200) {
+            console.error(req);
+            console.error(this.authData);
+            return err("Error while fetching Epic friends!");
         }
 
-        epicLog(this.epicIdToDisplayName);
+        // get username of friends
+        // we can request in batches of 100, partition the list of IDs
+        const friendIDs = json.friends.map(friend => friend.accountId);
+        const reqs = [];
+        for (let i = 0; i < friendIDs.length; i += 100) {
+            const partition = friendIDs.slice(i, i + 100);
+            const req = fetch("https://account-public-service-prod.ol.epicgames.com/account/api/public/account?accountId=" + partition.join("&accountId="), {
+                headers: {
+                    Authorization: "Bearer " + this.authData.token
+                }
+            });
+            reqs.push(req);
+        }
+
+        for(const req of reqs) {
+            const reqResult = await req;
+            if(reqResult.statusCode !== 200) {
+                console.error(reqResult);
+                err("Error while fetching Epic friends partition!");
+                continue;
+            }
+
+            const json = JSON.parse(reqResult.body);
+            for(const friend of json) {
+                this.epicIdToDisplayName[friend.id] = friend.displayName;
+            }
+        }
+
+        this.log(this.epicIdToDisplayName);
     }
 
     // xmpp stuff
     establishXMPPConnection(token) {
         try {
             const address = "xmpp-service-prod.ol.epicgames.com";
+            const accountId = this.getID(token);
 
             const messages = [
                 `<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" xml:lang="en" to="prod.ol.epicgames.com"/>`, '',
-                `<auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">${btoa("\0" + this.getID(token) + "\0" + token)}</auth>`,
+                `<auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">${btoa("\0" + accountId + "\0" + token)}</auth>`,
                 `<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" xml:lang="en" to="prod.ol.epicgames.com"/>`, '',
                 `<iq xmlns="jabber:client" type="set" id="4f3712da-95d0-43cd-b5de-c039e88c18c9"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><resource>V2:launcher:WIN::14E35C093CA24212AE2706986DB02768</resource></bind></iq>`,
                 //`<iq xmlns="jabber:client" type="get" id="3e1a1bf9-7eed-441e-98a2-2c093add066d"><query xmlns="jabber:iq:roster"/></iq>`, // friends list
@@ -2067,27 +2370,25 @@ class Epic extends Platform {
             const sock = new WebSocket(`wss://${address}`, "xmpp");
             sock.onopen = () => {
                 try {
-                    epicLog("Connected!");
+                    this.log("Connected!");
 
                     clearInterval(this.reconnectInterval);
                     this.reconnectInterval = null;
 
                     sendNext();
+                    this.heartbeat = setInterval(sendPing, 60_000);
                 } catch (e) {
                     err(e);
                 }
             };
             this.socket = sock;
 
-            const send = data => {
-                if(!data || this.destroyed) return;
+            const send = (data, log=true) => {
+                if(!data || !this.enabled) return;
                 try {
                     if(sock.readyState === 1) {
                         sock.send(data);
-                        epicLog("-> " + data);
-
-                        clearTimeout(this.heartbeat);
-                        this.heartbeat = setTimeout(() => send(" "), 60_000);
+                        if(log) this.log("-> " + data);
                     }
                 } catch (e) {
                     err(e);
@@ -2096,12 +2397,31 @@ class Epic extends Platform {
 
             const sendNext = () => send(messages.shift());
 
+            let lastPing = 0;
+            const sendPing = () => {
+                if(lastPing > 0 && Date.now() - lastPing > 150_000) {
+                    this.log("Haven't recieved a ping back in 150sec, reconnecting...");
+                    this.restart();
+                }
+
+                send("<iq xmlns=\"jabber:client\" id=\"acbeabf8-b04b-4e94-a044-6d6b8f04514e\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>", false);
+            }
+
             sock.onmessage = event => {
                 try {
                     // const timestamp = performance.timeOrigin + event.timeStamp
                     const data = event.data;
-                    epicLog("<- " + data);
-                    if(messages.length > 0) sendNext();
+
+                    if(data.includes("acbeabf8-b04b-4e94-a044-6d6b8f04514e"))
+                        lastPing = Date.now();
+                    else
+                        this.log("<- " + data);
+
+                    if(data.startsWith("<failure")) {
+                        err("Epic auth failure, restarting...");
+                        this.restart();
+                    }
+                    else if(messages.length > 0) sendNext();
 
                     // process data
                     if(data.startsWith("<presence ")) this.processPresence(data);
@@ -2112,7 +2432,7 @@ class Epic extends Platform {
 
             sock.error = console.error;
             sock.onclose = () => {
-                if(this.destroyed || sock !== this.socket) return epicLog("Websocket disconnected!");
+                if(!this.enabled || sock !== this.socket) return this.log("Websocket disconnected!");
                 console.error("Epic disconnected! Retrying in 5 seconds...");
 
                 if(this.reconnectInterval) return;
@@ -2142,6 +2462,7 @@ class Epic extends Platform {
         const statusEnd = presence.indexOf("</status>", statusStart);
         const status_raw = presence.substring(statusStart, statusEnd);
         const status = JSON.parse(status_raw);
+        this.log(status)
 
         let presenceType;
         if(presence.includes("type=")) {
@@ -2177,7 +2498,8 @@ class Epic extends Platform {
             timestamps: {
                 start: timestamp
             },
-            username: username
+            username: username,
+            priority: 2
         }
         let presence;
 
@@ -2189,6 +2511,7 @@ class Epic extends Platform {
                 if(status.Properties.OverrideAppId_s) {
                     if(status.Properties.OverrideAppId_s === "fn" && previousPresence && previousPresence.name === "Fortnite") return;
                     else if(status.Properties.OverrideAppId_s === "9773aa1aa54f4f7b80e44bef04986cea" && previousPresence.name && previousPresence.name.startsWith("Rocket League")) {
+                        if(previousPresence.details.includes("InGame")) return; // we already have score + timestamp data
                         // we can salvage the timestamp
                         presence = {
                             ...previousPresence,
@@ -2230,46 +2553,107 @@ class Epic extends Platform {
 
                 // sometimes rocket league presence statuses show score + time remaining
                 // it's kinda random, probably a gradual rollout?
-                const timeRemainingMatches = currentStatus.match(/ \[(.+) remaining]/);
+                const timeRemainingMatches = currentStatus.match(/ \[(.+) remaining]/); // example "InGame 0:1 [2:45 remaining]"
+                const overtimeMatches = currentStatus.match(/ \[Overtime (.+)]/); // example "InGame 2:2 [Overtime 0:15]"
                 if(timeRemainingMatches) {
                     const timeRemainingFormatted = timeRemainingMatches[1];
                     const [min, sec] = timeRemainingFormatted.split(':', 2);
-                    const seconds = min * 60 + sec;
+                    const seconds = parseInt(min) * 60 + parseInt(sec);
                     presence.timestamps.end = + new Date() + seconds * 1000;
-                    presence.timestamps.status.replace(timeRemainingMatches[0], "");
+                    presence.details = presence.details.replace(timeRemainingMatches[0], "").replace("InGame", "In Game - ");
+                } else if(overtimeMatches) {
+                    const overtimeFormatted = overtimeMatches[1];
+                    const [min, sec] = overtimeFormatted.split(':', 2);
+                    const seconds = parseInt(min) * 60 + parseInt(sec);
+                    presence.timestamps.start = + new Date() - seconds * 1000;
+                    presence.details = presence.details.replace(overtimeMatches[0], "").replace("InGame", "In Game - ");
                 } else if(previousPresence.name === "Rocket League") {
                     // reset timestamp if changed state, e.g. main menu -> in game
-                    const previousStatus = previousPresence.details;
-                    if(previousStatus !== currentStatus) presence.timestamps.start = + new Date();
+                    if(previousPresence.details !== currentStatus) presence.timestamps.start = + new Date();
                 }
 
-                break;
-            case "fghi4567eJdrrwo5Dgu1RiO2R0vM1XVK": // satisfactory
-                if(presenceType === "unavailable") return delete this.presenceCache[id];
-
-                // idk how satisfactory presences work so timestamps never reset
-
-                presence = {
-                    ...presenceBoilerplate,
-                    name: "Satisfactory",
-                    details: this.statusCache[id],
-                    assets: {
-                        large_image: epicLogoID
-                    },
-                    timestamps: {
-                        start: timestamp
-                    }
-                }
                 break;
             case "Fortnite":
-                if(previousPresence.name === "Fortnite") {
-                    const previousState = previousPresence.details.split(" - ")[0];
-                    const currentState = this.statusCache[id].split(" - ")[0];
-                    if(previousState === currentState) timestamp = previousPresence.timestamps.start;
+                try {
+                    const gamemode = this.fortniteGamemodes[status.Properties.GamePlaylistName_s] || {name: status.Properties.GamePlaylistName_s || "Unknown", maxSquadSize: 4, maxPlayers: 100};
+
+                    let details, state;
+                    if(status.bIsPlaying) {
+                        const kills = parseInt(status.Properties.FortGameplayStats_j.numKills);
+                        if(status.bIsJoinable) {
+                            if(gamemode.name === "CREATIVE MATCHMAKING") details = `Creative Fill - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
+                            else details = `Creative - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${status.Properties.FortGameplayStats_j.numKills} kills`;
+                        } else {
+                            if(status.Properties.ServerPlayerCount_i) details = `${gamemode.name} - ${status.Properties.ServerPlayerCount_i} left - ${kills} kill${kills === 1 ? "" : "s"}`;
+                            else details = `${gamemode.name} - Loading`;
+                        }
+                        if(status.Properties.FortGameplayStats_j.bFellToDeath) state = "Died of fall damage";
+                        else state = "In Game";
+                    } else {
+                        details = `${gamemode.name}`;
+                        state = "In the Lobby";
+                    }
+
+                    presence = {
+                        ...presenceBoilerplate,
+                        application_id: this.fortniteRpcAppId,
+                        name: "Fortnite",
+                        details: details,
+                        state: state,
+                        assets: {
+                            large_image: this.fortniteLogoAssetId
+                        },
+                        party: {
+                            id: status.SessionId,
+                            size: [status.Properties.Event_PartySize_s || status.Properties.FortPartySize_i, gamemode.maxSquadSize]
+                        },
+                        timestamps: {
+                            start: timestamp
+                        },
+                        gameId: status.SessionId
+                    }
+
+                    if(previousPresence.gameId === presence.gameId)
+                        presence.timestamps.start = previousPresence.timestamps.start;
+
+                    const partyData = Object.keys(status.Properties).filter(s => s.startsWith("party.joininfodata"))[0];
+                    if(partyData) {
+                        const partyInfo = status.Properties[partyData];
+                        presence.username = partyInfo.sourceDisplayName;
+                        presence.party.id = partyInfo.partyId;
+                    }
+                } catch(e) {
+                    console.error(status);
+                    err(e);
                 }
+
+                break;
+            default: // misc
+                if(presenceType === "unavailable") return delete this.presenceCache[id];
+
+                let name;
+                switch(presenceSource) {
+                    case "fghi4567eJdrrwo5Dgu1RiO2R0vM1XVK":
+                        name = "Satisfactory";
+                        break;
+                    case "fcb692f0fdf14526b1ffbb77cf1ef288":
+                        name = "Paladins";
+                        break;
+                    case "fghi4567gDK32qevrArU3uezn7r9kY8Y":
+                        name = "Rocket League Sideswipe";
+                        break;
+                    case "68d2cc08f9a94b8fb51af4f5cfa6d41b":
+                        name = "Grand Theft Auto V";
+                        break;
+                    default:
+                        console.error("Unknown game ID! " + presenceSource);
+                        if(this.debug) BdApi.alert("Unknown game ID! " + presenceSource);
+                        return;
+                }
+
                 presence = {
                     ...presenceBoilerplate,
-                    name: "Fortnite",
+                    name: name,
                     details: this.statusCache[id],
                     assets: {
                         large_image: epicLogoID
@@ -2278,25 +2662,21 @@ class Epic extends Platform {
                         start: timestamp
                     }
                 }
-                break;
-            default:
-                if(presenceSource === "fcb692f0fdf14526b1ffbb77cf1ef288") return; // paladins
-                BdApi.alert("Unknown game ID! " + presenceSource);
-                return;
         }
 
         this.presenceCache[id] = presence;
-        epicLog(this.presenceCache[id]);
+        this.log(this.presenceCache[id]);
     }
 
     async getAppName(appID) {
+        // uses store search. definitely not the best way since it won't work on hidden/unlisted games.
         if(appID === "fn") return "Fortnite";
         const req = await fetch("https://www.epicgames.com/graphql", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
                 query: "query searchStoreQuery($count: Int = 5, $keywords: String, $namespace: String, $category: String) {\n  Catalog {\n    searchStore(\n      count: $count\n      keywords: $keywords\n      namespace: $namespace\n      category: $category\n    ) {\n      elements {\n        title\n        namespace\n        id\n      }\n    }\n  }\n}\n",
-                "variables": {
+                variables: {
                     "namespace": appID,
                     "category": "games/edition/base|bundles/games|editors|software/edition/base"
                 }
@@ -2314,9 +2694,51 @@ class Epic extends Platform {
         // enabled switch
         const enabledSwitch = SettingsBuilder.enabledSwitch(this);
 
-        /*// cookies textbox
-        const textboxChange = (value) => this.cookies = value;
-        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("Auth Cookies", "Your auth.riotgames.com cookies", this.cookies, textboxChange);*/
+        // cookies textbox
+        const deleteButtonClick = () => {
+            this.authData = {};
+            SettingsBuilder.getTextboxInput(tokenTextbox).value = "";
+            if(this.enabled) SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            this.saveData();
+        }
+        const tokenTextbox = SettingsBuilder.textboxWithButton("Refresh Token", null, this.authData.refresh, null, {placeholder: "Refresh token", disabled: true}, "Delete", deleteButtonClick);
+
+        const codeButtonClick = async (textbox, redeemFunction) => {
+            const code = SettingsBuilder.getTextboxInput(textbox).value;
+            if(!code) return;
+
+            const button = textbox.children[0].children[1].children[1];
+            button.classList.remove("bd-button-danger");
+            button.innerHTML = "Redeeming...";
+
+            const success = await redeemFunction(code);
+
+            if(success) {
+                button.innerHTML = "Success!";
+                SettingsBuilder.getTextboxInput(tokenTextbox).value = this.authData.refresh;
+                SettingsBuilder.getTextboxInput(textbox).value = "";
+                this.saveData();
+            } else {
+                button.innerHTML = "Retry";
+                button.classList.add("bd-button-danger");
+            }
+        }
+
+        const authCodeButtonClick = () => codeButtonClick(authCodeTextbox, this.redeemAuthCode.bind(this));
+        const authCodeTextbox = SettingsBuilder.textboxWithButton(null, null, null, null, {placeholder: "Auth code"}, "Redeem auth code", authCodeButtonClick);
+
+        const exchangeCodeButtonClick = () => codeButtonClick(exchangeCodeTextbox, this.redeemExchangeCode.bind(this));
+        const exchangeCodeTextbox = SettingsBuilder.textboxWithButton(null, "If you're signed in in your browser, get your auth code here. Otherwise, generate an exchange code.", null, null, {placeholder: "Exchange code"}, "Redeem exchange code", exchangeCodeButtonClick);
+        setTimeout(() => {
+            exchangeCodeTextbox.children[0].children[2].innerHTML = `If you're signed in in your browser, get your auth code <a href="https://www.epicgames.com/id/api/redirect?clientId=34a02cf8f4414e29b15921876da36f9a&responseType=code" target="_blank">here</a>. Otherwise, <a href="https://github.com/xMistt/fortnitepy-bot/wiki/Exchange-Code" target="_blank">generate an exchange code</a>.`
+        }, 50);
+
+        // remove spacing between textboxes
+        setTimeout(() => {
+            tokenTextbox.children[0].children[3].classList.remove("divider-1Jfi9s");
+            authCodeTextbox.children[0].children[3].classList.remove("divider-1Jfi9s");
+            exchangeCodeTextbox.children[0].children[3].classList.remove("divider-1Jfi9s");
+        }, 50);
 
         const usersList = {
             idToName: this.epicIdToDisplayName,
@@ -2328,15 +2750,18 @@ class Epic extends Platform {
         const datalist = SettingsBuilder.createDatalist("epic", Object.keys(usersList.nameToId));
         const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToEpicID, "Epic username", /^.+$/);
 
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, userMapDiv);
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
+        
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, tokenTextbox, authCodeTextbox, exchangeCodeTextbox, userMapDiv, debugSwitch);
     }
 }
-platforms.push(Epic);
 
 
 /**************
  **  PLUGIN  **
  **************/
+
+const platforms = [Riot, Epic, Steam, Hypixel, Twitch];
 
 module.exports = (() => {
     const config = {
@@ -2347,7 +2772,7 @@ module.exports = (() => {
                 "discord_id": "316978243716775947",
                 "github_username": "giorgi-o"
             }],
-            "version": "0.1",
+            "version": "0.2",
             "description": "Show what people are playing on other platforms such as Steam and Valorant",
             "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
             "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
@@ -2391,8 +2816,68 @@ module.exports = (() => {
     } : (([Plugin, Api]) => {
         const plugin = (Plugin, Api) => {
             return class CrossPlatformPlaying extends Plugin {
-                saveAndUpdate() {
+                load() {
+                    const version = "0.2";
+                    // added: green, improved: blurple, fixed: red, progress: yellow
+                    const changelog = [
+                        {
+                            title: "Hello!",
+                            type: "progress",
+                            items: ["Woo, first changelog! And I must say, I've changed quite a bit in the month since the last time I published a new version. So here is a non-exhaustive list of things that I added and/or improved :)"]
+                        },
+                        {
+                            title: "Riot",
+                            type: "fixed",
+                            items: [
+                                "Added a button to extract the cookies from the Riot launcher automatically and easily",
+                                "League: Changed the rendering to make it clearer what mode people are playing",
+                                "League: Support for clashes",
+                                "Fixed crashing when you send a message to someone (whoops)"
+                            ]
+                        },
+                        {
+                            title: "Epic",
+                            type: "added",
+                            items: [
+                                "You can now login from the settings panel using an auth code or an exchange code",
+                                "Now supports Fortnite presences to show more data such as kills and party size",
+                                "Now takes advantage of Rocket League statuses that show timestamps",
+                                "Improve the heartbeat mechanism to keep the connection alive"
+                            ]
+                        },
+                        {
+                            title: "Twitch",
+                            type: "improved",
+                            items: [
+                                "Activity now includes stream title and viewer count",
+                                "Better error handling"
+                            ]
+                        },
+                        {
+                            title: "General plugin stuff",
+                            type: "fixed",
+                            items: [
+                                "If a user has multiple activities, for example if they are playing a Steam game while watching a Twitch stream and have their League launcher open in the background, the plugin knows which one to show",
+                                "Fixed many many many annoying bugs",
+                                "Each plugin now has a 'debug' setting to output debug info to the console"
+                            ]
+                        },
 
+                    ];
+
+                    try {
+                        const data = BdApi.loadData("CrossPlatformPlaying", "currentVersionInfo");
+                        if(!data.hasShownChangelog || data.version !== version) {
+                            ZeresPluginLibrary.Modals.showChangelogModal("CrossPlatformPlaying Changelog", version, changelog);
+                            BdApi.saveData("CrossPlatformPlaying", "currentVersionInfo", {
+                                version: version,
+                                hasShownChangelog: true
+                            })
+                        }
+                    } catch(e) {
+                        // newlines don't work but whatever
+                        err("Your CrossPlatformPlaying config JSON is invalid!\nTry putting it into an online JSON formatter to look for any errors.\n" + e);
+                    }
                 }
                 onStart() {
                     // Required function. Called when the plugin is activated (including after reloads)
@@ -2401,8 +2886,6 @@ module.exports = (() => {
                     try {
                         BdApi.loadData("CrossPlatformPlaying", "");
                     } catch(e) {
-                        // newlines don't work but whatever
-                        BdApi.alert("Your config JSON is invalid!\nTry putting it into an online JSON formatter to look for any errors.\n" + e);
                         return;
                     }
 
@@ -2425,14 +2908,17 @@ module.exports = (() => {
                             if(presences) newActivities.push(...presences);
                         }
 
-                        if(newActivities.length > 0) return newActivities.concat(ret); //ret.concat(newActivities);
-                        else return ret;
+                        if(newActivities.length === 0) return ret;
+
+                        const sortFunction = (a, b) => (b.priority || 0) - (a.priority || 0);
+                        return newActivities.concat(ret).sort(sortFunction);
                     });
 
                     this.loadPatches();
                     this.patchActivityHeader();
-                    // patchGetAssetImage();
+                    this.patchGetAssetImage();
                     this.reloadActivityRenderModule();
+                    this.patchRenderHeader();
                 }
 
                 onStop() {
@@ -2440,8 +2926,7 @@ module.exports = (() => {
                     BdApi.Patcher.unpatchAll("CrossPlatformPlaying");
 
                     for(const platform of this.instances) {
-                        platform.destroyed = true;
-                        platform.destroy();
+                        platform.destroy(true);
                     }
                     this.instances.length = 0; // clear array for next time plugin is launched
                 }
@@ -2561,14 +3046,25 @@ module.exports = (() => {
                         });
                     }
 
+                    this.patchRenderHeader = () => {
+                        BdApi.Patcher.after("CrossPlatformPlaying", activityRenderModule.exports.default.prototype, "renderHeader", (_this, args, ret) => {
+                            if(!_this.activity || !_this.activity.username) return ret;
+
+                            if(!ret.props.children[1].props.children.props.children.startsWith("Playing as"))
+                                ret.props.children[1].props.children.props.children += " as " + _this.activity.username;
+
+                            return ret;
+                        });
+                    }
+
                     this.reloadActivityRenderModule = () => {
                         // the activityRenderModule.renderImage function stores a reference to the unpatched getAssetImage function
                         // we need to reload the webpack to update the reference
+                        // todo use "instead" patcher for better compatibility with other plugins
                         const reloadedModule = {exports: {}};
                         ZeresPluginLibrary.WebpackModules.require.m[activityRenderModule.id](reloadedModule, reloadedModule.exports, ZeresPluginLibrary.WebpackModules.require);
                         activityRenderModule.exports.default.prototype.renderImage = reloadedModule.exports.default.prototype.renderImage;
                         activityRenderModule.exports.default.prototype.renderHeader = reloadedModule.exports.default.prototype.renderHeader;
-
                     }
 
                     discord_id = ZeresPluginLibrary.DiscordModules.UserInfoStore.getId();

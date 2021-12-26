@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.2.0
+ * @version 0.2.1
  * @authorId 316978243716775947
  */
 /*@cc_on
@@ -423,13 +423,16 @@ class Steam extends Platform {
         const url = `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=${this.apiKey}&steamids=${ids.join(',')}`;
         const req = await fetch(url);
 
-        if(req.statusCode === 403) {
-            if(this.apiKey) BdApi.alert("Your Steam API key is invalid! Steam has been disabled, reenable it in settings.");
-            else BdApi.alert("You haven't provided a Steam API key!");
-            this.destroy();
-            return;
-        } else if(req.statusCode !== 200) {
-            console.error("HTTP error " + req.statusCode + " when fetching steam data", req);
+        if(req.statusCode !== 200) {
+            console.error(req);
+            if(req.statusCode === 403) {
+                console.error(req);
+                if(this.apiKey) BdApi.alert("Your Steam API key is invalid! Steam has been disabled, reenable it in settings.");
+                else BdApi.alert("You haven't provided a Steam API key!");
+                this.destroy();
+                return;
+            }
+            console.error("HTTP error " + req.statusCode + " when fetching steam data");
             return;
         }
 
@@ -603,13 +606,15 @@ class Hypixel extends Platform {
         const url = `https://api.hypixel.net/status?key=${this.apiKey}&uuid=${uuid}`;
         const req = await fetch(url);
 
-        if(req.statusCode === 403) {
-            if(this.apiKey) BdApi.alert("Your Hypixel API key is invalid! The Hypixel plugin has been disabled, reenable it in settings.");
-            else BdApi.alert("You haven't provided a Hypixel API key!");
-            this.destroy();
-            return;
-        } else if(req.statusCode !== 200) {
-            console.error("HTTP error " + req.statusCode + " when fetching hypixel player status data", req);
+        if(req.statusCode !== 200) {
+            console.error(req);
+            if(req.statusCode === 403) {
+                if(this.apiKey) BdApi.alert("Your Hypixel API key is invalid! The Hypixel plugin has been disabled, reenable it in settings.");
+                else BdApi.alert("You haven't provided a Hypixel API key!");
+                this.destroy();
+                return;
+            }
+            console.error("HTTP error " + req.statusCode + " when fetching hypixel player status data");
             return;
         }
 
@@ -2155,7 +2160,7 @@ class Epic extends Platform {
         const req = await fetch("https://fortnite-api.com/v1/playlists"); // big thanks to Officer and his excellent API
         const json = JSON.parse(req.body);
         for(const gamemode of json.data) {
-            this.fortniteGamemodes[gamemode.id] = {
+            this.fortniteGamemodes[gamemode.id.toLowerCase()] = {
                 name: gamemode.name,
                 maxSquadSize: gamemode.maxSquadSize,
                 maxPlayers: gamemode.maxPlayers
@@ -2362,8 +2367,7 @@ class Epic extends Platform {
                 `<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" xml:lang="en" to="prod.ol.epicgames.com"/>`, '',
                 `<auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">${btoa("\0" + accountId + "\0" + token)}</auth>`,
                 `<open xmlns="urn:ietf:params:xml:ns:xmpp-framing" version="1.0" xml:lang="en" to="prod.ol.epicgames.com"/>`, '',
-                `<iq xmlns="jabber:client" type="set" id="4f3712da-95d0-43cd-b5de-c039e88c18c9"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><resource>V2:launcher:WIN::14E35C093CA24212AE2706986DB02768</resource></bind></iq>`,
-                //`<iq xmlns="jabber:client" type="get" id="3e1a1bf9-7eed-441e-98a2-2c093add066d"><query xmlns="jabber:iq:roster"/></iq>`, // friends list
+                `<iq xmlns="jabber:client" type="set" id="4f3712da-95d0-43cd-b5de-c039e88c18c9"><bind xmlns="urn:ietf:params:xml:ns:xmpp-bind"><resource>V2:launcher:WIN::</resource></bind></iq>`,
                 `<presence xmlns="jabber:client" id="638e9399-7760-435d-a351-c168f06bc7fa"/>`
             ]
 
@@ -2575,14 +2579,14 @@ class Epic extends Platform {
                 break;
             case "Fortnite":
                 try {
-                    const gamemode = this.fortniteGamemodes[status.Properties.GamePlaylistName_s] || {name: status.Properties.GamePlaylistName_s || "Unknown", maxSquadSize: 4, maxPlayers: 100};
+                    const gamemode = this.fortniteGamemodes[status.Properties.GamePlaylistName_s || ""] || {name: status.Properties.GamePlaylistName_s || "", maxSquadSize: 0, maxPlayers: 100};
 
                     let details, state;
                     if(status.bIsPlaying) {
                         const kills = parseInt(status.Properties.FortGameplayStats_j.numKills);
                         if(status.bIsJoinable) {
                             if(gamemode.name === "CREATIVE MATCHMAKING") details = `Creative Fill - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
-                            else details = `Creative - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${status.Properties.FortGameplayStats_j.numKills} kills`;
+                            else details = `Creative - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
                         } else {
                             if(status.Properties.ServerPlayerCount_i) details = `${gamemode.name} - ${status.Properties.ServerPlayerCount_i} left - ${kills} kill${kills === 1 ? "" : "s"}`;
                             else details = `${gamemode.name} - Loading`;
@@ -2593,6 +2597,9 @@ class Epic extends Platform {
                         details = `${gamemode.name}`;
                         state = "In the Lobby";
                     }
+
+                    const partySize = status.Properties.FortPartySize_i || status.Properties.Event_PartySize_s;
+                    const maxPartySize = gamemode.maxSquadSize || (partySize <= 4 ? 4 : 16);
 
                     presence = {
                         ...presenceBoilerplate,
@@ -2605,7 +2612,7 @@ class Epic extends Platform {
                         },
                         party: {
                             id: status.SessionId,
-                            size: [status.Properties.Event_PartySize_s || status.Properties.FortPartySize_i, gamemode.maxSquadSize]
+                            size: [partySize, maxPartySize]
                         },
                         timestamps: {
                             start: timestamp
@@ -2772,7 +2779,7 @@ module.exports = (() => {
                 "discord_id": "316978243716775947",
                 "github_username": "giorgi-o"
             }],
-            "version": "0.2.0",
+            "version": "0.2.1",
             "description": "Show what people are playing on other platforms such as Steam and Valorant",
             "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
             "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
@@ -2817,13 +2824,16 @@ module.exports = (() => {
         const plugin = (Plugin, Api) => {
             return class CrossPlatformPlaying extends Plugin {
                 load() {
-                    const version = "0.2.0";
+                    const version = config.info.version;
                     // added: green, improved: blurple, fixed: red, progress: yellow
                     const changelog = [
                         {
-                            title: "Hello!",
+                            title: "Changelog",
                             type: "progress",
-                            items: ["Woo, first changelog! And I must say, I've changed quite a bit in the month since the last time I published a new version. So here is a non-exhaustive list of things that I added and/or improved :)"]
+                            items: [
+                                "Version 2.0.1: Fortnite's sometimes sends playlist IDs in lowercase for some reason, now accounts for that",
+                                "The rest of this popup is the changelog for 0.2, in case you missed it:"
+                            ]
                         },
                         {
                             title: "Riot",

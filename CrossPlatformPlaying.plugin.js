@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.2.1
+ * @version 0.2.2
  * @authorId 316978243716775947
  */
 /*@cc_on
@@ -36,6 +36,7 @@
 const https = require("https")
 const tls = require("tls");
 const fs = require("fs");
+const net = require("net");
 
 // send an HTTP request to a URL, bypassing CORS policy
 const fetch = (url, options={}) => {
@@ -524,24 +525,144 @@ class Steam extends Platform {
     }
 }
 
+/*****************
+ **  MINECRAFT  **
+ *****************/
+
+class Minecraft extends Platform {
+    constructor() {
+        super("minecraft");
+
+        this.mcUUIDToUsername = {};
+
+        this.loadData();
+        this.UUIDs = [...new Set(Object.values(this.discordToMinecraftUUIDs).flat())] // remove duplicates
+
+        const log = this.log.bind(this);
+        this.hypixel = new Hypixel(this.UUIDs, this.hypixelApiKey, log);
+        this.private = new MCPrivate(this.UUIDs, [], log);
+
+        if(this.enabled) {
+            this.start();
+        }
+    }
+
+    start() {
+        this.fetchUsernames().then(() => {
+            this.hypixel.start();
+        });
+        this.private.start();
+    }
+
+    loadData() {
+        const data = BdApi.loadData(pluginName, "minecraft");
+        if(data) super.loadData();
+        else {
+            // fetch data from old version of CrossPlatformPlaying
+            const data = BdApi.loadData(pluginName, "hypixel");
+            if(data) {
+                this.enabled = data.enabled || false;
+                this.hypixelApiKey = data.apiKey || "";
+                this.discordToMinecraftUUIDs = data.usersMap || {};
+                this.debug = data.debug || false;
+            }
+            this.saveData();
+            this.loadData();
+        }
+    }
+
+    serializeData() {
+        return {
+            enabled: this.enabled || false,
+            hypixelApiKey: this.hypixelApiKey || "",
+            usersMap: this.discordToMinecraftUUIDs || {},
+            debug: this.debug || false
+        }
+    }
+
+    deserializeData(data) {
+        this.enabled = data.enabled || false;
+        this.hypixelApiKey = data.hypixelApiKey || "";
+        this.discordToMinecraftUUIDs = data.usersMap || {};
+        this.debug = data.debug || false;
+    }
+
+    getPresence(discord_id) {
+        const uuids = this.discordToMinecraftUUIDs[discord_id];
+        if (!uuids) return;
+
+        const presences = [];
+
+        for (const uuid of uuids) {
+            const hypixelPresence = this.hypixel.getPresence(uuid);
+            if(hypixelPresence) presences.push(hypixelPresence);
+
+            const privatePresences = this.private.getPresence(uuid);
+            if(privatePresences) presences.push(...privatePresences);
+        }
+
+        if(presences) return presences;
+    }
+
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.hypixel.destroy();
+        this.private.destroy();
+        if(!pluginShutdown) this.saveData();
+    }
+
+    async fetchUsernames() {
+        await Promise.all(this.UUIDs.map(this.fetchUsername.bind(this)));
+    }
+
+    async fetchUsername(UUID) {
+        // https://wiki.vg/Mojang_API#UUID_to_Profile_and_Skin.2FCape
+        const req = await fetch(`https://sessionserver.mojang.com/session/minecraft/profile/${UUID}`);
+        const json = JSON.parse(req.body);
+        this.mcUUIDToUsername[UUID] = json.name;
+    }
+
+    getSettings(discordUserList, discordUsersDatalist) {
+        // enabled switch
+        const enabledSwitch = SettingsBuilder.enabledSwitch(this);
+
+        // api key textbox
+        const textboxChange = (value) => {
+            this.apiKey = value;
+            if(this.enabled) {
+                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            }
+        }
+        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("Hypixel API Key", "Your Hypixel API key. Use the /api command in-game to get it.", this.hypixelApiKey, textboxChange);
+
+        // uuid regex adapted from https://stackoverflow.com/a/14166194/6087491
+        const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToMinecraftUUIDs, "Minecraft UUID", /^[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89aAbB][a-f0-9]{3}-?[a-f0-9]{12}$/);
+        // todo make them username instead of UUID
+        // todo make it work when adding/removing users (changing hypixel timeout, etc.)
+
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
+
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
+    }
+}
+
 
 /***************
  **  HYPIXEL  **
  ***************/
 
-class Hypixel extends Platform {
+class Hypixel {
 
-    constructor() {
-        super("hypixel");
+    constructor(UUIDs, apiKey, log) {
+        this.UUIDs = UUIDs;
+        this.apiKey = apiKey;
+        this.log = log;
 
         this.timeouts = [];
         this.presenceCache = {};
-
-        this.loadData();
-
-        if(this.enabled) {
-            this.start();
-        }
+        this.games = {
+            MAIN: {name: "Main Lobby", modes: []}
+        };
     }
 
     start() {
@@ -553,44 +674,54 @@ class Hypixel extends Platform {
         }
     }
 
-    serializeData() {
-        return {
-            enabled: this.enabled || false,
-            apiKey: this.apiKey || "",
-            usersMap: this.discordToMinecraftUUIDs || {},
-            debug: this.debug || false
-        }
+    getPresence(uuid) {
+        return this.presenceCache[uuid];
     }
 
-    deserializeData(data) {
-        this.enabled = data.enabled || false;
-        this.apiKey = data.apiKey || "";
-        this.discordToMinecraftUUIDs = data.usersMap || {};
-        this.debug = data.debug || false;
-    }
-
-    getPresence(discord_id) {
-        return super.getPresence(discord_id, this.discordToMinecraftUUIDs, this.presenceCache);
-    }
-
-    destroy(pluginShutdown) {
-        this.enabled = false;
+    destroy() {
         this.presenceCache = {};
         clearInterval(this.cacheInterval);
         for(const timeout of this.timeouts)
             clearTimeout(timeout);
-        if(!pluginShutdown) this.saveData();
     }
 
     async fetchGames() {
-        // todo use https://github.com/slothpixel/hypixelconstants
-        const req = await fetch("https://api.hypixel.net/resources/games");
-        const json_body = JSON.parse(req.body)
-        if(!json_body.success) {
-            console.error(json_body);
-            return err("Could not fetch hypixel gamemodes!");
+        const modes_req = await fetch("https://raw.githubusercontent.com/slothpixel/hypixelconstants/master/build/modes.json");
+        const modes = JSON.parse(modes_req.body);
+
+        const extract_modes = game => {
+            if(!game.modes) return [];
+            let modes = {};
+            for(const mode of game.modes) {
+                if(mode.modes) modes = {...modes, ...extract_modes(mode)}
+                else modes[mode.key] = mode.name;
+            }
+            return modes;
         }
-        this.games = json_body.games;
+
+        for(const game of modes) {
+            this.games[game.key] = {
+                name: game.check || game.name,
+                modes: extract_modes(game)
+            }
+        }
+
+        // slothpixel is slow to update when new games come out (e.g. seasonal minigames)
+        const hypixel_req = await fetch("https://api.hypixel.net/resources/games");
+        const hypixel_modes = JSON.parse(hypixel_req.body);
+        if(!hypixel_modes.success) return;
+
+        for(const game_id of Object.keys(hypixel_modes.games)) {
+            const game = hypixel_modes.games[game_id];
+            const game_data = this.games[game_id] || {name: game.name, modes: {}};
+
+            game_data.modes = {
+                ...game.modeNames,
+                ...game_data.modes
+            }
+
+            this.games[game_id] = game_data;
+        }
     }
 
     calculateRefreshInterval() {
@@ -598,7 +729,8 @@ class Hypixel extends Platform {
         // each player takes 1 request if offline, 2 if online
         // to be safe, I do max 1 request / 2 sec -> 1 player / 4 sec
         // aka if there are 3 players, we request all players every 12 seconds
-        return Object.keys(this.discordToMinecraftUUIDs).length * 4000;
+        // return this.UUIDs.length * 4000;
+        return this.UUIDs.length * 4000;
 
     }
 
@@ -664,30 +796,34 @@ class Hypixel extends Platform {
 
     processPlayerData(uuid, player, session) {
         try {
+            const format = s => {
+                const capitalize = s => s.charAt(0).toUpperCase() + s.slice(1);
+                return "(?) " + s.split(/[ _]/).map(capitalize).join(' ');
+            }
+
             const game = this.games[session.gameType] || {};
+            const mode = session.mode === "LOBBY" ? "In the Lobby" :
+                            game.modes ? game.modes[session.mode] :
+                            format(session.mode);
 
             const presence = {
                 application_id: customRpcAppId,
                 name: "Hypixel",
-                details: "Playing " + game.name || session.gameType,
-                state: game.modeNames && game.modeNames[session.mode] || session.mode,
+                details: "Playing " + game.name || format(session.gameType),
+                state: mode,
                 type: 0,
                 timestamps: {start: player.lastLogin},
                 assets: {
                     large_image: "883490391964385352",
                     large_text: "Playing as " + player.displayname,
                 },
-                username: player.displayname,
-                priority: 1
+                username: player.displayname
             };
 
             if(session.map) {
                 presence.assets.small_image = "883498326580920403";
                 presence.assets.small_text = session.map;
             }
-
-            if(presence.state.toLowerCase().includes("lobby"))
-                presence.priority = -2;
 
             this.presenceCache[uuid] = presence;
             this.log(presence);
@@ -699,40 +835,185 @@ class Hypixel extends Platform {
     }
 
     updateCache() {
-        if(!this.enabled) return clearInterval(this.cacheInterval);
         try {
-            const uuids = Object.values(this.discordToMinecraftUUIDs);
-
-            for (let i = 0; i < uuids.length; i++) {
+            for (let i = 0; i < this.UUIDs.length; i++) {
                 this.timeouts.push(setTimeout(() => {
-                    this.getPlayerStatus(uuids[i]);
+                    this.getPlayerStatus(this.UUIDs[i]);
                     this.timeouts.shift();
-                }, 1000 * i));
+                }, 4000 * i));
             }
         } catch (e) {
             err(e);
         }
     }
+}
 
-    getSettings(discordUserList, discordUsersDatalist) {
-        // enabled switch
-        const enabledSwitch = SettingsBuilder.enabledSwitch(this);
+/******************
+ **  MC PRIVATE  **
+ ******************/
 
-        // api key textbox
-        const textboxChange = (value) => {
-            this.apiKey = value;
-            if(this.enabled) {
-                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
-            }
+class MCPrivate {
+
+    constructor(UUIDs, servers, log) {
+        this.UUIDs = UUIDs;
+        this.servers = servers;
+        this.log = log;
+
+        this.presenceCache = {};
+    }
+
+    start() {
+        this.pingServers();
+        this.interval = setInterval(this.pingServers.bind(this), 30_000);
+    }
+
+    pingServers() {
+        for(const url of this.servers) {
+            this.pingServer(url);
         }
-        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("API Key", "Your Hypixel API key. Use the /api command in-game to get it.", this.apiKey, textboxChange);
+    }
 
-        // uuid regex adapted from https://stackoverflow.com/a/14166194/6087491
-        const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToMinecraftUUIDs, "Minecraft UUID", /^[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89aAbB][a-f0-9]{3}-?[a-f0-9]{12}$/);
+    parseServerAddress(url) {
+        const colonIndex = url.indexOf(':');
+        if(colonIndex === -1) return [url, 25565];
+        return[url.substring(0, colonIndex), parseInt(url.substring(colonIndex + 1))];
+    }
 
-        const debugSwitch = SettingsBuilder.debugSwitch(this);
-        
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
+    pingServer(url) {
+        const [address, port] = this.parseServerAddress(url);
+        const socket = net.createConnection(port, address);
+        socket.on("data", (data) => {
+            this.parseData(data, url);
+            socket.end();
+        });
+
+        // handshake
+        const handshake = [];
+        handshake.push(this.varInt(47)) // protocol version (1.8)
+        handshake.push(this.utfString(address));
+        handshake.push(this.shortInt(port));
+        handshake.push(this.varInt(1)); // status query (as opposed to login)
+        this.sendPayload(socket, 0, Buffer.concat(handshake));
+
+        // request
+        this.sendPayload(socket, 0, Buffer.from([]));
+    }
+
+    varInt(int) {
+        // https://wiki.vg/Protocol#VarInt_and_VarLong
+        const bytes = [];
+        while (true) {
+            if ((int & ~0x7F) === 0) {
+                bytes.push(int);
+                return Buffer.from(bytes);
+            }
+            bytes.push((int & 0x7F) | 0x80);
+            int >>>= 7;
+        }
+    }
+
+    utfString(str) {
+        return Buffer.concat([this.varInt(str.length), Buffer.from(str, 'utf-8')]);
+    }
+
+    shortInt(int) {
+        const buf = Buffer.alloc(2);
+        buf.writeUInt16BE(int);
+        return buf;
+    }
+
+    sendPayload(socket, packetId, payload) {
+        packetId = this.varInt(packetId);
+        const packetLength = this.varInt(packetId.length + payload.length);
+        const packet = Buffer.concat([packetLength, packetId, payload]);
+        socket.write(packet);
+    }
+
+    readVarInt (buf, start=0) {
+        // https://github.com/PassTheMayo/minecraft-server-util/blob/master/src/util/varint.ts#L1
+        let value = 0;
+        let i = start;
+        let currentByte;
+
+        do {
+            currentByte = buf[i];
+            value |= ((currentByte & 0x7F) << (7 * i));
+            i++;
+        } while ((currentByte & 0x80) !== 0);
+
+        return [value, i];
+    }
+
+    parseData(buf, url) {
+        try {
+            const [packetLength, i] = this.readVarInt(buf);
+            const [packetID, j] = this.readVarInt(buf, i);
+            const [JSONLength, k] = this.readVarInt(buf, j);
+            const unparsed = buf.slice(k, k + JSONLength).toString();
+
+            const data = JSON.parse(unparsed);
+            this.log(data);
+
+            this.processData(data, url)
+        } catch(e) {
+            console.error(buf);
+            console.error(e);
+            err("Failed to parse server data for " + url);
+        }
+    }
+
+    processData(data, url) {
+        const players = data.players.sample || [];
+        if(players) for(const player of players) {
+            const uuid = player.id.replaceAll('-', "");
+            let previousPresence;
+            if(this.presenceCache[uuid] === undefined) this.presenceCache[uuid] = {};
+            else previousPresence = this.presenceCache[uuid][url];
+
+            const presence = {
+                application_id: customRpcAppId,
+                name: "Minecraft",
+                details: "Playing on " + url,
+                state: "In Game",
+                party: {
+                    id: url,
+                    size: [data.players.online, data.players.max]
+                },
+                type: 0,
+                timestamps: {
+                    start: previousPresence ? previousPresence.timestamps.start : Date.now()
+                },
+                assets: {
+                    // large_image: "926115914053746760",
+                    large_image: `url:https://crafatar.com/renders/head/${uuid}?overlay=true`,
+                    large_text: "Playing as " + player.name,
+                    // small_image: `url:https://minotar.net/avatar/${uuid}/64`,
+                    // small_image: `url:https://crafatar.com/avatars/${uuid}?size=64&overlay=true`,
+                    // small_image: "926115914053746760",
+                    // small_text: "Playing as " + player.name,
+                },
+                username: player.name
+            };
+
+            if(previousPresence) presence.timestamps.start = previousPresence.timestamps.start;
+
+            this.presenceCache[uuid][url] = presence;
+            this.log(presence);
+        }
+
+        // clear players not on server anymore
+        const UUIDs = players.map(player => player.id.replaceAll('-', ""));
+        for(const UUID in this.presenceCache) {
+            if(!UUIDs.includes(UUID)) delete this.presenceCache[UUID][url];
+        }
+    }
+
+    getPresence(uuid) {
+        if(this.presenceCache[uuid]) return Object.values(this.presenceCache[uuid]);
+    }
+
+    destroy() {
+        clearInterval(this.interval);
     }
 }
 
@@ -810,7 +1091,7 @@ class Twitch extends Platform {
 
             if(json_data[0].errors) {
                 console.error(json_data);
-                if(json_data[0].errors[0].message === "service timeout") return;
+                if(json_data[0].errors[0].message === "service timeout" || json_data[0].errors[0].message === "service error") return;
                 console.error(data);
                 return err("Twitch friends request returned error!");
 
@@ -1356,6 +1637,12 @@ class Riot extends Platform {
         }
 
         const pas_token = await this.getPAS(access_token);
+        if(!access_token.startsWith('e')) {
+            this.log("Invalid Riot PAS: " + pas_token);
+            // riot sometimes returns error 520 when fetching PAS
+            // note: this is a very dangerous workaround
+            return setTimeout(this.startXMPPConnection.bind(this), 1000);
+        }
 
         if(!this.discordToRiotPUUIDs[discord_id])
             this.discordToRiotPUUIDs[discord_id] = [this.decodeToken(pas_token).sub];
@@ -1551,6 +1838,7 @@ class Valorant {
                 delete this.presenceCache[puuid];
             }
         } catch (e) {
+            console.error(data);
             err(e);
         }
     }
@@ -1741,6 +2029,7 @@ class Valorant {
             this.presenceCache[puuid] = presence;
             this.log(presence);
         } catch (e) {
+            console.error(puuid, presenceData, timestamp);
             err(e);
         }
     }
@@ -1818,6 +2107,7 @@ class Lol {
                 delete this.presenceCache[puuid];
             }
         } catch (e) {
+            console.error(data);
             err(e);
         }
     }
@@ -2006,6 +2296,7 @@ class Lol {
                 this.log(presence);
             }
         } catch (e) {
+            console.error(puuid, data, timestamp)
             err(e);
         }
     }
@@ -2048,6 +2339,7 @@ class WildRift {
                 delete this.presenceCache[puuid];
             }
         } catch (e) {
+            console.error(data);
             err(e);
         }
     }
@@ -2104,7 +2396,6 @@ class Epic extends Platform {
 
     async start() {
         if(!this.authData.refresh) {
-            this.enabled = false;
             return this.destroy();
         }
         const success = await this.authenticate();
@@ -2112,7 +2403,6 @@ class Epic extends Platform {
             await Promise.all([this.fetchFriendsList(), this.fetchFortniteGamemodes(), this.fetchFortniteAssets()]);
             this.establishXMPPConnection(this.authData.token);
         } else {
-            this.enabled = false;
             this.destroy();
         }
     }
@@ -2152,8 +2442,10 @@ class Epic extends Platform {
 
     restart() {
         this.destroy();
-        this.enabled = true;
-        setTimeout(this.start.bind(this), 500); // sockets take a while to close
+        setTimeout(() => {
+            this.enabled = true;
+            this.start();
+        }, 500); // sockets take a while to close
     }
 
     async fetchFortniteGamemodes() {
@@ -2161,9 +2453,11 @@ class Epic extends Platform {
         const json = JSON.parse(req.body);
         for(const gamemode of json.data) {
             this.fortniteGamemodes[gamemode.id.toLowerCase()] = {
-                name: gamemode.name,
+                name: gamemode.name || gamemode.id,
+                subName: gamemode.subName,
                 maxSquadSize: gamemode.maxSquadSize,
-                maxPlayers: gamemode.maxPlayers
+                maxPlayers: gamemode.maxPlayers,
+                smallIcon: gamemode.images.missionIcon
             }
         }
     }
@@ -2422,7 +2716,7 @@ class Epic extends Platform {
                         this.log("<- " + data);
 
                     if(data.startsWith("<failure")) {
-                        err("Epic auth failure, restarting...");
+                        // err("Epic auth failure, restarting...");
                         this.restart();
                     }
                     else if(messages.length > 0) sendNext();
@@ -2430,6 +2724,8 @@ class Epic extends Platform {
                     // process data
                     if(data.startsWith("<presence ")) this.processPresence(data);
                 } catch (e) {
+                    console.error(event);
+                    console.error(event.data);
                     err(e);
                 }
             };
@@ -2448,6 +2744,7 @@ class Epic extends Platform {
                 clearTimeout(this.heartbeat);
             };
         } catch (e) {
+            console.error(token);
             err(e);
         }
     }
@@ -2579,23 +2876,24 @@ class Epic extends Platform {
                 break;
             case "Fortnite":
                 try {
-                    const gamemode = this.fortniteGamemodes[status.Properties.GamePlaylistName_s || ""] || {name: status.Properties.GamePlaylistName_s || "", maxSquadSize: 0, maxPlayers: 100};
+                    const gamemode = this.fortniteGamemodes[(status.Properties.GamePlaylistName_s || "").toLowerCase()] || {name: status.Properties.GamePlaylistName_s || "", maxSquadSize: 0, maxPlayers: 100};
 
                     let details, state;
                     if(status.bIsPlaying) {
                         const kills = parseInt(status.Properties.FortGameplayStats_j.numKills);
                         if(status.bIsJoinable) {
-                            if(gamemode.name === "CREATIVE MATCHMAKING") details = `Creative Fill - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
-                            else details = `Creative - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
+                            details = gamemode.name === "CREATIVE MATCHMAKING" ? `Creative Fill` : gamemode.name || "Creative";
+                            if(status.Properties.ServerPlayerCount_i) details += ` - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
+                            else details += " - Loading";
                         } else {
                             if(status.Properties.ServerPlayerCount_i) details = `${gamemode.name} - ${status.Properties.ServerPlayerCount_i} left - ${kills} kill${kills === 1 ? "" : "s"}`;
                             else details = `${gamemode.name} - Loading`;
                         }
                         if(status.Properties.FortGameplayStats_j.bFellToDeath) state = "Died of fall damage";
-                        else state = "In Game";
+                        else state = (gamemode.subName ? `${gamemode.subName} - ` : "") + "In Game";
                     } else {
                         details = `${gamemode.name}`;
-                        state = "In the Lobby";
+                        state = (gamemode.subName ? `${gamemode.subName} - ` : "") + "In the Lobby";
                     }
 
                     const partySize = status.Properties.FortPartySize_i || status.Properties.Event_PartySize_s;
@@ -2608,7 +2906,9 @@ class Epic extends Platform {
                         details: details,
                         state: state,
                         assets: {
-                            large_image: this.fortniteLogoAssetId
+                            large_image: this.fortniteLogoAssetId,
+                            small_image: gamemode.smallIcon && `url:${gamemode.smallIcon}`,
+                            small_text: gamemode.subName
                         },
                         party: {
                             id: status.SessionId,
@@ -2630,6 +2930,7 @@ class Epic extends Platform {
                         presence.party.id = partyInfo.partyId;
                     }
                 } catch(e) {
+                    console.error(presence);
                     console.error(status);
                     err(e);
                 }
@@ -2672,7 +2973,7 @@ class Epic extends Platform {
         }
 
         this.presenceCache[id] = presence;
-        this.log(this.presenceCache[id]);
+        this.log(presence);
     }
 
     async getAppName(appID) {
@@ -2768,18 +3069,18 @@ class Epic extends Platform {
  **  PLUGIN  **
  **************/
 
-const platforms = [Riot, Epic, Steam, Hypixel, Twitch];
+const platforms = [Riot, Epic, Steam, Minecraft, Twitch];
 
 module.exports = (() => {
     const config = {
         "info": {
-            "name": "CrossPlatformPlaying",
+            "name": pluginName,
             "authors": [{
                 "name": "Giorgio",
                 "discord_id": "316978243716775947",
                 "github_username": "giorgi-o"
             }],
-            "version": "0.2.1",
+            "version": "0.2.2",
             "description": "Show what people are playing on other platforms such as Steam and Valorant",
             "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
             "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
@@ -2831,58 +3132,26 @@ module.exports = (() => {
                             title: "Changelog",
                             type: "progress",
                             items: [
-                                "Version 2.0.1: Fortnite's sometimes sends playlist IDs in lowercase for some reason, now accounts for that",
-                                "The rest of this popup is the changelog for 0.2, in case you missed it:"
+                                "Ironically, fixed JSON error when trying to read changelog",
+                                "Double ironically, Discord broke changelogs in the last update so most of you won't actually see this.",
+                                "Added support for private Minecraft servers, although no way to configure it atm",
+                                "A bunch of other fixes I made along the way, check the github diff :)"
                             ]
-                        },
-                        {
-                            title: "Riot",
-                            type: "fixed",
-                            items: [
-                                "Added a button to extract the cookies from the Riot launcher automatically and easily",
-                                "League: Changed the rendering to make it clearer what mode people are playing",
-                                "League: Support for clashes",
-                                "Fixed crashing when you send a message to someone (whoops)"
-                            ]
-                        },
-                        {
-                            title: "Epic",
-                            type: "added",
-                            items: [
-                                "You can now login from the settings panel using an auth code or an exchange code",
-                                "Now supports Fortnite presences to show more data such as kills and party size",
-                                "Now takes advantage of Rocket League statuses that show timestamps",
-                                "Improve the heartbeat mechanism to keep the connection alive"
-                            ]
-                        },
-                        {
-                            title: "Twitch",
-                            type: "improved",
-                            items: [
-                                "Activity now includes stream title and viewer count",
-                                "Better error handling"
-                            ]
-                        },
-                        {
-                            title: "General plugin stuff",
-                            type: "fixed",
-                            items: [
-                                "If a user has multiple activities, for example if they are playing a Steam game while watching a Twitch stream and have their League launcher open in the background, the plugin knows which one to show",
-                                "Fixed many many many annoying bugs",
-                                "Each plugin now has a 'debug' setting to output debug info to the console"
-                            ]
-                        },
-
+                        }
                     ];
 
                     try {
-                        const data = BdApi.loadData("CrossPlatformPlaying", "currentVersionInfo");
-                        if(!data.hasShownChangelog || data.version !== version) {
-                            ZeresPluginLibrary.Modals.showChangelogModal("CrossPlatformPlaying Changelog", version, changelog);
-                            BdApi.saveData("CrossPlatformPlaying", "currentVersionInfo", {
-                                version: version,
-                                hasShownChangelog: true
-                            })
+                        const data = BdApi.loadData(pluginName, "currentVersionInfo");
+                        if(!data || !data.hasShownChangelog || data.version !== version) {
+                            setTimeout(() => {
+                                try {
+                                    ZeresPluginLibrary.Modals.showChangelogModal("CrossPlatformPlaying Changelog", version, changelog);
+                                    BdApi.saveData(pluginName, "currentVersionInfo", {
+                                        version: version,
+                                        hasShownChangelog: true
+                                    });
+                                } catch(e) {console.error(e)} // atm ZLibrary modals don't work
+                            }, 5000);
                         }
                     } catch(e) {
                         // newlines don't work but whatever
@@ -2894,7 +3163,7 @@ module.exports = (() => {
 
                     // check if config json is valid
                     try {
-                        BdApi.loadData("CrossPlatformPlaying", "");
+                        BdApi.loadData(pluginName, "");
                     } catch(e) {
                         return;
                     }
@@ -2907,7 +3176,7 @@ module.exports = (() => {
 
                     // setup getActivity() patch
                     const ActivityStore = ZeresPluginLibrary.DiscordModules.UserStatusStore;
-                    BdApi.Patcher.after("CrossPlatformPlaying", ActivityStore, "getActivities", (_this, args, ret) => {
+                    BdApi.Patcher.after(pluginName, ActivityStore, "getActivities", (_this, args, ret) => {
 
                         const id = args[0];
 
@@ -2933,7 +3202,7 @@ module.exports = (() => {
 
                 onStop() {
                     // Required function. Called when the plugin is deactivated
-                    BdApi.Patcher.unpatchAll("CrossPlatformPlaying");
+                    BdApi.Patcher.unpatchAll(pluginName);
 
                     for(const platform of this.instances) {
                         platform.destroy(true);
@@ -3036,7 +3305,7 @@ module.exports = (() => {
 
                     this.patchActivityHeader = () => {
                         // only works with "playing ..." headers
-                        BdApi.Patcher.after("CrossPlatformPlaying", activityHeaderModule.exports, "default", (_this, args, ret) => {
+                        BdApi.Patcher.after(pluginName, activityHeaderModule.exports, "default", (_this, args, ret) => {
                             if(!args[0].username) return ret;
                             const presence = args[0];
 
@@ -3050,14 +3319,14 @@ module.exports = (() => {
 
                     this.patchGetAssetImage = () => {
                         // setup getAssetImage patch
-                        BdApi.Patcher.instead("CrossPlatformPlaying", activityAssetModule.exports, "getAssetImage", (_this, args, func) => {
-                            if(args[1].startsWith("url:")) return args[1].substr(4);
+                        BdApi.Patcher.instead(pluginName, activityAssetModule.exports, "getAssetImage", (_this, args, func) => {
+                            if(args[1] && args[1].startsWith("url:")) return args[1].substr(4);
                             return func(...args);
                         });
                     }
 
                     this.patchRenderHeader = () => {
-                        BdApi.Patcher.after("CrossPlatformPlaying", activityRenderModule.exports.default.prototype, "renderHeader", (_this, args, ret) => {
+                        BdApi.Patcher.after(pluginName, activityRenderModule.exports.default.prototype, "renderHeader", (_this, args, ret) => {
                             if(!_this.activity || !_this.activity.username) return ret;
 
                             if(!ret.props.children[1].props.children.props.children.startsWith("Playing as"))

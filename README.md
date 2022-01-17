@@ -28,14 +28,14 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
   - Support for Steam Rich Presence _(to show extra info in games that use Steam's RPC such as CS:GO)_
   - Xbox Live _(this is useful as it shows what people are playing on Xbox but also on PC via Game Bar)_
   - Playstation
-  - Battle.net/Uplay/Origin
+  - Battle.net/Uplay/Origin/Rockstar/GoG
   - Any other platform or game that lets you see what your friends are playing, theoretically
   - Apple Music _(integrate it just like Spotify)_
 - The Code
   - Make it modular to easily install/remove platforms
   - Improve the way the plugin injects the custom activities (doesn't currently update the member list)
 - See if your invisible friends are online _(the plugin already has the data, I just need to figure out the best way to display online vs invisible vs offline)_
-- Add a Wiki of how it works _(how it interacts with each platform)_
+- Create a [Wiki](https://github.com/giorgi-o/CrossPlatformPlaying/wiki) to document how my findings of how each platform works
 - Add guides on how to get the tokens/keys/cookies of each platform
 - Make the settings panel less ugly
 

@@ -1,5 +1,5 @@
 # CrossPlatformPlaying
-A [BetterDiscord](https://betterdiscord.app/) plugin that brings Rich Presence to games that don't support it, and lets you see what your friends are playing even if they turned off game activity.
+A [BetterDiscord](https://betterdiscord.app/) plugin that lets you see what your friends are playing even if they turned off game activity, and brings Rich Presence to games that don't support it.
 
 <img src="https://user-images.githubusercontent.com/20621396/147405144-5b87a3f7-0795-4733-9d0f-6d4d5b78fe72.png" alt="illustration"/>
 
@@ -10,6 +10,7 @@ CrossPlatformPlaying is a plugin that lets you see what your friends are playing
 - Valorant/League of Legends
 - Steam
 - Epic Games (Fortnite, Rocket League...)
+- EA (Apex, FIFA...)
 - Twitch
 - Hypixel
 
@@ -28,7 +29,7 @@ Feel free to DM me or ping me in the BetterDiscord server to give feedback or to
   - Support for Steam Rich Presence _(to show extra info in games that use Steam's RPC such as CS:GO)_
   - Xbox Live _(this is useful as it shows what people are playing on Xbox but also on PC via Game Bar)_
   - Playstation
-  - Battle.net/Uplay/Origin/Rockstar/GoG
+  - Battle.net/Uplay/Rockstar/GoG
   - Any other platform or game that lets you see what your friends are playing, theoretically
   - Apple Music _(integrate it just like Spotify)_
 - The Code

@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.2.2
+ * @version 0.2.3
  * @authorId 316978243716775947
  */
 /*@cc_on
@@ -37,6 +37,7 @@ const https = require("https")
 const tls = require("tls");
 const fs = require("fs");
 const net = require("net");
+const crypto = require("crypto");
 
 // send an HTTP request to a URL, bypassing CORS policy
 const fetch = (url, options={}) => {
@@ -128,6 +129,7 @@ class Platform {
     restart() {
         this.destroy(false);
         this.enabled = true;
+        this.saveData();
         this.start();
     }
 
@@ -146,6 +148,241 @@ class Platform {
     }
 }
 
+const removeFromList = (list, value) => {
+    const index = list.indexOf(value);
+    if(index !== -1) list.splice(index, 1);
+}
+
+const timeouts = [];
+const intervals = [];
+
+const setTimeout = (fn, delay) => {
+    const id = window.setTimeout(() => {
+        removeFromList(timeouts, id);
+        fn();
+    }, delay);
+    timeouts.push(id);
+    return id;
+}
+const setInterval = (fn, delay) => {
+    const id = window.setInterval(fn, delay);
+    intervals.push(id);
+    return id;
+}
+
+
+// custom websocket client adding support for HTTP headers and cookies
+class SimpleSocket extends EventTarget {
+    constructor(url, options={}) {
+        super();
+        this.on = this.addEventListener;
+        this.emit = (e, d) => this.dispatchEvent(new CustomEvent(e, d));
+
+        this.url = new URL(url);
+        if(this.url.protocol !== "wss:") return console.error("Only wss WebSockets are supported!");
+
+        this.key = options.key || crypto.randomBytes(16).toString('base64');
+
+        this.status = SimpleSocket.states.CONNECTING;
+
+        const reqOptions = {
+            hostname: this.url.hostname,
+            host: this.url.host,
+            port: this.url.port || 443,
+            path: this.url.pathname + this.url.search,
+            rejectUnauthorized: false,
+            headers: {
+                "Connection": "Upgrade",
+                "Upgrade": "websocket",
+                "Sec-WebSocket-Key": this.key,
+                "Sec-WebSocket-Version": options.version || 13,
+                ...options.headers
+            },
+            ...options.requestOptions
+        }
+        if(options.protocol) reqOptions.headers["Sec-WebSocket-Protocol"] = options.protocol;
+        if(options.extensions) reqOptions.headers["Sec-WebSocket-Extensions"] = options.extensions;
+
+        this.req = https.request(reqOptions);
+
+        this.req.on('upgrade', (res, socket, head) => {
+            // check accept header
+            const expected = crypto.createHash('sha1').update(this.key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest('base64');
+            if(res.headers["sec-websocket-accept"] !== expected) return console.error("Something fishy is going on... sec-websocket-accept expected vs recieved:", expected, res.headers["sec-websocket-accept"]);
+
+            this.socket = socket;
+
+            socket.on('data', data => this.receive(data));
+            socket.on('close', () => this.closed());
+            socket.on('error', console.error);
+
+            this.status = SimpleSocket.states.READY;
+
+            if(this.onconnect) this.onconnect(socket, res);
+
+            if(head && head.length) this.receive(head);
+        });
+
+        this.req.on("error", console.error);
+
+        this.req.end();
+    }
+
+    send(data, opcode) {
+        try {
+            if(!this.socket) return;
+            if(this.status !== SimpleSocket.states.READY) return console.error("Tried to send data on a closed WebSocket!");
+
+            let header;
+            if(Buffer.isBuffer(data)) header = 0x82;
+            else {
+                header = 0x81;
+                data = Buffer.from(new TextEncoder().encode(data.toString()));
+            }
+            if(opcode) header = 0x80 + opcode;
+
+            let lengthByte = 0x80; // mask set to 1
+            let extendedLength;
+            if(data.length > 65535) {
+                lengthByte += 127;
+                (extendedLength = Buffer.alloc(8)).writeBigUInt64BE(BigInt(data.length));
+            } else if(data.length > 125) {
+                lengthByte += 126;
+                (extendedLength = Buffer.alloc(2)).writeUInt16BE(data.length);
+            } else {
+                lengthByte += data.length;
+                extendedLength = Buffer.alloc(0);
+            }
+
+            const maskKey = crypto.randomBytes(4);
+            const maskedData = this.maskData(data, maskKey);
+
+            const buf = Buffer.concat([
+                Buffer.from([header, lengthByte]),
+                extendedLength, maskKey, maskedData
+            ]);
+
+            this.socket.write(buf);
+        } catch(e) {
+            err(e);
+        }
+    }
+
+    receive(buf) {
+        try {
+            if(!this.onmessage) return;
+
+            const fin = buf[0] >> 7; // bit 0 is FIN
+            const opcode = buf[0] & 0x0F; // bits 4-7 is opcode
+            const mask = buf[1] >> 7; // bit 8 is mask
+
+            if(opcode === SimpleSocket.opcode.PING) {
+                return this.pong();
+            }
+
+            let length = buf[1] & 0x7F;
+            let lengthEnd = 2;
+
+            if(length === 126) {
+                length = buf.readUInt16BE(2);
+                lengthEnd = 4;
+            } else if(length === 127) {
+                length = buf.readBigUInt64BE(2);
+                lengthEnd = 10;
+            }
+
+            let data;
+            if(mask) {
+                const key = buf.readUInt32BE(lengthEnd);
+                lengthEnd += 4;
+                const masked = buf.subarray(lengthEnd, lengthEnd + length);
+
+                data = this.maskData(masked, key);
+            } else {
+                data = buf.subarray(lengthEnd, lengthEnd + length);
+            }
+
+            if(opcode === SimpleSocket.opcode.CLOSE) {
+                return this.closed(data);
+            } else if(this.status !== SimpleSocket.states.READY) {
+                return console.error("Data received on closed WebSocket!");
+            }
+
+            if(opcode === SimpleSocket.opcode.TEXT) data = data.toString('utf8');
+
+            this.onmessage(data, buf);
+        } catch(e) {
+            err(e);
+        }
+    }
+
+    close(statusCode, reason) {
+        if(!this.socket) return;
+
+        let data = [];
+        if(statusCode) {
+            data = new Buffer(2);
+            data.writeUInt16BE(statusCode);
+
+            if(reason) data = Buffer.concat([data, new TextEncoder().encode(reason.toString())]);
+        }
+
+        this.send(data, SimpleSocket.opcode.CLOSE);
+        this.status = SimpleSocket.states.CLOSING;
+        this.socket.end();
+    }
+
+    closed(data) {
+        if(this.status === SimpleSocket.states.CLOSED) return;
+
+        this.status = SimpleSocket.states.CLOSED;
+        this.socket.destroy();
+
+        if(!this.onclose) return;
+        if(data) {
+            const statusCode = data.readUInt16BE();
+            const reason = data.toString('utf-8', 2);
+            this.onclose(statusCode, reason);
+        } else this.onclose();
+    }
+
+    maskData(data, key) {
+        const masked = [];
+        for(let i = 0; i < data.length; i++)
+            masked.push(data[i] ^ key[i % 4]);
+        return Buffer.from(masked);
+    }
+
+    ping() {
+        this.send([], SimpleSocket.opcode.PING);
+    }
+
+    pong() {
+        this.send([], SimpleSocket.opcode.PONG);
+    }
+
+    static opcode = {
+        CONT: 0,
+        TEXT: 1, BIN: 2,
+        CLOSE: 8,
+        PING: 9, PONG: 10
+    }
+
+    static states = {
+        CONNECTING: 0,
+        READY: 1,
+        CLOSING: 2,
+        CLOSED: 3
+    }
+}
+
+// SimpleSocket todo:
+// list of websockets to destroy
+// support continuation frames
+// support close codes
+// support http status codes other than 101
+
+// helper functions for building the settings panel
 const SettingsBuilder = {
     enabledSwitch: (platform) => {
         const onChange = (value) => {
@@ -205,7 +442,7 @@ const SettingsBuilder = {
         }
         return datalist;
     },
-    userMapInterface: (platform, platformDatalist, discordDatalist, platformUserList, discordUserList, usersMap, platformHeaderValue, platformIdRegex=/./, discordIdRegex=/^\d{15,}$/) => {
+    userMapInterface: (platform, platformDatalist, discordDatalist, platformUserList, discordUserList, usersMap, description, platformHeaderValue, platformIdRegex=/./, discordIdRegex=/^\d{15,}$/) => {
         /** userList format: {
          *      idToName: {
          *          1234: "gary"
@@ -216,9 +453,21 @@ const SettingsBuilder = {
          *  }
          */
 
+        // get a few class names from discord (can't find them in ZLibrary)
+        if(!SettingsBuilder.inputClassNames) SettingsBuilder.inputClassNames = BdApi.findModuleByProps("input", "inputMini", "inputWrapper");
+        if(!SettingsBuilder.descriptionClassNames) SettingsBuilder.descriptionClassNames = BdApi.findModuleByProps('labelBold', 'labelDescriptor', 'labelSelected');
+
         const userMapDiv = document.createElement("div");
-        userMapDiv.classList.add("marginBottom20-32qID7");
+        userMapDiv.classList.add(ZeresPluginLibrary.DiscordClassModules.Dividers.container);
         if(platformDatalist) userMapDiv.append(platformDatalist);
+
+        if(description) {
+            const descriptionDiv = document.createElement("div");
+            descriptionDiv.className = (SettingsBuilder.descriptionClassNames.description);
+            descriptionDiv.innerHTML = description;
+            descriptionDiv.style.marginBottom = "6px";
+            userMapDiv.append(descriptionDiv);
+        }
 
         const table = document.createElement("table");
         table.style.width = "100%";
@@ -249,7 +498,7 @@ const SettingsBuilder = {
 
         // handle saving data to json
         let saveTimeout;
-        const inputListener = () => {
+        const saveData = () => {
             clearTimeout(saveTimeout);
 
             // delete all entries in old usersMap
@@ -298,13 +547,6 @@ const SettingsBuilder = {
         let id = 0;
 
         const addRow = (platformValue, discordValue, insertAtEnd=false) => {
-            // reenable X button if disabled
-            if(table.children.length === 2) {
-                const remove_button = table.children[1].children[0].children[0];
-                remove_button.disabled = false;
-                remove_button.classList.remove("bd-button-disabled");
-            }
-
             const row = document.createElement("tr");
             row.style.width = "100%";
             row.id = platform.platformId + "-row-" + id.toString();
@@ -321,9 +563,9 @@ const SettingsBuilder = {
 
             // platform dropdown
             const platformInput = document.createElement("input");
-            platformInput.className = "input-cIJ7To";
+            platformInput.className = SettingsBuilder.inputClassNames.input;
             platformInput.style.width = "100%";
-            platformInput.oninput = inputListener;
+            platformInput.oninput = saveData;
             if(platformValue) platformInput.value = platformValue;
             if(platformDatalist) platformInput.setAttribute("list", platformDatalist.id);
 
@@ -334,9 +576,9 @@ const SettingsBuilder = {
 
             // discord dropdown
             const discordInput = document.createElement("input");
-            discordInput.className = "input-cIJ7To";
+            discordInput.className = SettingsBuilder.inputClassNames.input;
             discordInput.style.width = "100%";
-            discordInput.oninput = inputListener;
+            discordInput.oninput = saveData;
             if(discordValue) discordInput.value = discordValue;
             if(discordDatalist) discordInput.setAttribute("list", discordDatalist.id);
 
@@ -354,18 +596,19 @@ const SettingsBuilder = {
 
         const removeRow = (id) => {
             table.removeChild(document.getElementById(id));
-
-            // if only one row remaining, disable X button
-            if(table.children.length === 2) {
-                const remove_button = table.children[1].children[0].children[0];
-                remove_button.disabled = true;
-                remove_button.classList.add("bd-button-disabled");
-            }
+            if(table.children.length === 1) addRow();
+            saveData();
         }
 
-        if(Object.values(usersMap).flat().length === 0) {
+        const userCount = Object.values(usersMap).flat().length;
+        if(userCount === 0) {
             addRow("", "");
-        } else {
+        }
+        else if(userCount === 1) {
+            const [[discord_id, platform_ids]] = Object.entries(usersMap);
+            addRow(platform_ids[0], discord_id);
+        }
+        else {
             for(const [discord_id, platform_ids] of Object.entries(usersMap)) {
                 for(const platform_id of platform_ids) {
                     addRow(platformUserList && platformUserList.idToName[platform_id] || platform_id,
@@ -374,7 +617,139 @@ const SettingsBuilder = {
             }
         }
 
+        // add divider
+        const divider = document.createElement("div");
+        divider.classList.add(ZeresPluginLibrary.DiscordClassModules.Dividers.divider);
+        divider.classList.add(ZeresPluginLibrary.DiscordClassModules.Dividers.dividerDefault);
+        userMapDiv.append(divider);
+
         return userMapDiv;
+    },
+    list: (platform, theList, description, header, regex=/./) => {
+        // get a few class names from discord (can't find them in ZLibrary)
+        if(!SettingsBuilder.inputClassNames) SettingsBuilder.inputClassNames = BdApi.findModuleByProps("input", "inputMini", "inputWrapper");
+        if(!SettingsBuilder.descriptionClassNames) SettingsBuilder.descriptionClassNames = BdApi.findModuleByProps('labelBold', 'labelDescriptor', 'labelSelected');
+
+        const listDiv = document.createElement("div");
+        listDiv.classList.add(ZeresPluginLibrary.DiscordClassModules.Dividers.container);
+
+        if(description) {
+            const descriptionDiv = document.createElement("div");
+            descriptionDiv.className = (SettingsBuilder.descriptionClassNames.description);
+            descriptionDiv.innerHTML = description;
+            descriptionDiv.style.marginBottom = "6px";
+            listDiv.append(descriptionDiv);
+        }
+
+        const table = document.createElement("table");
+        table.style.width = "100%";
+        listDiv.append(table);
+
+        // top row with + button and labels
+        const topRow = document.createElement("tr");
+        topRow.id = platform.platformId + "-list-row-top";
+
+        const addRowButton = document.createElement("button");
+        addRowButton.innerText = "+";
+        addRowButton.className = "bd-button";
+        const addRowButtonColumn = document.createElement("th");
+        addRowButtonColumn.append(addRowButton);
+        topRow.append(addRowButtonColumn);
+
+        const inputColumnTitle = document.createElement("th");
+        inputColumnTitle.innerText = header || "Value";
+        inputColumnTitle.style.color = "var(--header-primary)";
+        topRow.append(inputColumnTitle);
+
+        table.append(topRow);
+
+        // handle saving data to json
+        let saveTimeout;
+        const saveData = () => {
+            clearTimeout(saveTimeout);
+
+            // delete all entries in old list
+            theList.length = 0;
+
+            for(const row of table.children) {
+                if(row.id === platform.platformId + "-list-row-top") continue;
+
+                const inputElement = row.children[1].children[0];
+                const inputValue = inputElement.value;
+
+                if(regex && !regex.test(inputValue)) {
+                    inputElement.style.color = "red";
+                    continue;
+                }
+                inputElement.style.color = null;
+
+                if(!inputValue) continue;
+
+                theList.push(inputValue);
+            }
+
+            saveTimeout = setTimeout(() => {
+                platform.saveData();
+            }, 500);
+        }
+
+        let id = 0;
+
+        const addRow = (value, insertAtEnd=false) => {
+            const row = document.createElement("tr");
+            row.style.width = "100%";
+            row.id = platform.platformId + "-list-row-" + id.toString();
+
+            // X button
+            const removeButton = document.createElement("button");
+            removeButton.className = "bd-button";
+            removeButton.innerText = "X";
+            removeButton.onclick = () => removeRow(row.id);
+
+            const removeButtonColumn = document.createElement("th");
+            removeButtonColumn.append(removeButton);
+            row.append(removeButtonColumn);
+
+            // input
+            const platformInput = document.createElement("input");
+            platformInput.className = SettingsBuilder.inputClassNames.input;
+            platformInput.style.width = "100%";
+            platformInput.oninput = saveData;
+            if(value) platformInput.value = value;
+
+            const platformInputColumn = document.createElement("th");
+            platformInputColumn.style.width = "100%";
+            platformInputColumn.append(platformInput);
+            row.append(platformInputColumn);
+
+            if(insertAtEnd) table.append(row);
+            else table.insertBefore(row, table.children[1]);
+
+            id++;
+        }
+        addRowButton.onclick = () => addRow();
+
+        const removeRow = (id) => {
+            table.removeChild(document.getElementById(id));
+            if(table.children.length === 1) addRow();
+            saveData();
+        }
+
+        if(theList.length <= 1) {
+            addRow(theList[0]);
+        } else {
+            for(const item of theList) {
+                addRow(item, true);
+            }
+        }
+
+        // add divider
+        const divider = document.createElement("div");
+        divider.classList.add(ZeresPluginLibrary.DiscordClassModules.Dividers.divider);
+        divider.classList.add(ZeresPluginLibrary.DiscordClassModules.Dividers.dividerDefault);
+        listDiv.append(divider);
+
+        return listDiv;
     }
 }
 
@@ -510,8 +885,9 @@ class Steam extends Platform {
             apiKeyTextbox.getElement().children[0].children[2].innerHTML = `Your Steam API key. Get one at <a href="https://steamcommunity.com/dev/apikey" target="_blank">https://steamcommunity.com/dev/apikey</a>`
         }, 50);
 
-        const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToSteamIDs, "Steam ID", /^\d+$/);
-        
+        const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToSteamIDs,
+            "To get IDs, use a site such as <a href='https://www.steamidfinder.com/' target=\"_blank\">Steam ID Finder</a>.", "Steam ID", /^\d+$/);
+
         const debugSwitch = SettingsBuilder.debugSwitch(this);
 
         return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
@@ -540,7 +916,7 @@ class Minecraft extends Platform {
 
         const log = this.log.bind(this);
         this.hypixel = new Hypixel(this.UUIDs, this.hypixelApiKey, log);
-        this.private = new MCPrivate(this.UUIDs, [], log);
+        this.private = new MCPrivate(this.UUIDs, this.servers, log);
 
         if(this.enabled) {
             this.start();
@@ -576,6 +952,7 @@ class Minecraft extends Platform {
             enabled: this.enabled || false,
             hypixelApiKey: this.hypixelApiKey || "",
             usersMap: this.discordToMinecraftUUIDs || {},
+            servers: this.servers || [],
             debug: this.debug || false
         }
     }
@@ -584,6 +961,7 @@ class Minecraft extends Platform {
         this.enabled = data.enabled || false;
         this.hypixelApiKey = data.hypixelApiKey || "";
         this.discordToMinecraftUUIDs = data.usersMap || {};
+        this.servers = data.servers || [];
         this.debug = data.debug || false;
     }
 
@@ -636,13 +1014,17 @@ class Minecraft extends Platform {
         const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("Hypixel API Key", "Your Hypixel API key. Use the /api command in-game to get it.", this.hypixelApiKey, textboxChange);
 
         // uuid regex adapted from https://stackoverflow.com/a/14166194/6087491
-        const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToMinecraftUUIDs, "Minecraft UUID", /^[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89aAbB][a-f0-9]{3}-?[a-f0-9]{12}$/);
+        const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToMinecraftUUIDs,
+            "To get UUIDs, use <a href='https://namemc.com' target=\"_blank\">NameMC</a>.", "Minecraft UUID", /^[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89aAbB][a-f0-9]{3}-?[a-f0-9]{12}$/);
         // todo make them username instead of UUID
         // todo make it work when adding/removing users (changing hypixel timeout, etc.)
 
+        const serverListDiv = SettingsBuilder.list(this, this.servers,
+            "A list of Minecraft servers to regularly query. Only works for small private servers, and only when there are less than ~12 players online.", "Server URL");
+
         const debugSwitch = SettingsBuilder.debugSwitch(this);
 
-        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, serverListDiv, debugSwitch);
     }
 }
 
@@ -860,6 +1242,8 @@ class MCPrivate {
         this.log = log;
 
         this.presenceCache = {};
+        this.pingTimeouts = [];
+        this.bufferedMessages = {};
     }
 
     start() {
@@ -883,6 +1267,12 @@ class MCPrivate {
         const [address, port] = this.parseServerAddress(url);
         const socket = net.createConnection(port, address);
         socket.on("data", (data) => {
+            clearTimeout(timeout);
+            removeFromList(this.pingTimeouts, timeout);
+
+            const roundTrip = Date.now() - sentAt;
+            this.log(`Ping to ${url} took ${roundTrip}ms`);
+
             this.parseData(data, url);
             socket.end();
         });
@@ -897,6 +1287,15 @@ class MCPrivate {
 
         // request
         this.sendPayload(socket, 0, Buffer.from([]));
+
+        // in case of no response
+        const sentAt = Date.now();
+        let timeout = setTimeout(() => {
+            removeFromList(this.pingTimeouts, timeout);
+            this.log(`Server ${url} didn't respond within 5 seconds! Assuming the server is down`);
+            this.clearServerPresences(url);
+        }, 5000);
+        this.pingTimeouts.push(timeout);
     }
 
     varInt(int) {
@@ -937,7 +1336,7 @@ class MCPrivate {
 
         do {
             currentByte = buf[i];
-            value |= ((currentByte & 0x7F) << (7 * i));
+            value |= ((currentByte & 0x7F) << (7 * (i - start)));
             i++;
         } while ((currentByte & 0x80) !== 0);
 
@@ -946,7 +1345,18 @@ class MCPrivate {
 
     parseData(buf, url) {
         try {
+            if(this.bufferedMessages[url]) {
+                buf = Buffer.concat([this.bufferedMessages[url], buf]);
+                delete this.bufferedMessages[url];
+            }
+
             const [packetLength, i] = this.readVarInt(buf);
+            if(buf.length < packetLength) {
+                this.log(`Received chunk of data from ${url}, waiting for the rest...`);
+                this.bufferedMessages[url] = buf;
+                return;
+            }
+
             const [packetID, j] = this.readVarInt(buf, i);
             const [JSONLength, k] = this.readVarInt(buf, j);
             const unparsed = buf.slice(k, k + JSONLength).toString();
@@ -954,7 +1364,7 @@ class MCPrivate {
             const data = JSON.parse(unparsed);
             this.log(data);
 
-            this.processData(data, url)
+            this.processData(data, url);
         } catch(e) {
             console.error(buf);
             console.error(e);
@@ -964,7 +1374,7 @@ class MCPrivate {
 
     processData(data, url) {
         const players = data.players.sample || [];
-        if(players) for(const player of players) {
+        for(const player of players) {
             const uuid = player.id.replaceAll('-', "");
             let previousPresence;
             if(this.presenceCache[uuid] === undefined) this.presenceCache[uuid] = {};
@@ -984,13 +1394,10 @@ class MCPrivate {
                     start: previousPresence ? previousPresence.timestamps.start : Date.now()
                 },
                 assets: {
-                    // large_image: "926115914053746760",
                     large_image: `url:https://crafatar.com/renders/head/${uuid}?overlay=true`,
-                    large_text: "Playing as " + player.name,
-                    // small_image: `url:https://minotar.net/avatar/${uuid}/64`,
-                    // small_image: `url:https://crafatar.com/avatars/${uuid}?size=64&overlay=true`,
-                    // small_image: "926115914053746760",
-                    // small_text: "Playing as " + player.name,
+                    large_text: data.version.name,
+                    small_image: data.favicon ? "url:" + data.favicon : null,
+                    small_text: (data.description.text || data.description.toString() || "").replaceAll(/( {2})|\n/g, ' ').replaceAll(/§./g, '')
                 },
                 username: player.name
             };
@@ -1006,6 +1413,11 @@ class MCPrivate {
         for(const UUID in this.presenceCache) {
             if(!UUIDs.includes(UUID)) delete this.presenceCache[UUID][url];
         }
+    }
+
+    clearServerPresences(url) {
+        for(const presences of Object.values(this.presenceCache))
+            delete presences[url];
     }
 
     getPresence(uuid) {
@@ -1091,7 +1503,7 @@ class Twitch extends Platform {
 
             if(json_data[0].errors) {
                 console.error(json_data);
-                if(json_data[0].errors[0].message === "service timeout" || json_data[0].errors[0].message === "service error") return;
+                if(["service timeout", "service error", "service unavailable"].includes(json_data[0].errors[0].message)) return;
                 console.error(data);
                 return err("Twitch friends request returned error!");
 
@@ -1115,7 +1527,7 @@ class Twitch extends Platform {
             err("Couldn't JSON Parse Twitch response!", data);
         }
     }
-    
+
     extractStreamerList(friend_edges) {
         const streamerLogins = [];
         for(const edge of friend_edges) {
@@ -1128,16 +1540,17 @@ class Twitch extends Platform {
         }
         return streamerLogins;
     }
-    
+
     async fetchStreamsMetadata(streamerLogins) {
         const requestBody = [];
         for(const streamerLogin of streamerLogins) {
             requestBody.push({
                 "operationName":"StreamMetadata",
                 "variables": {"channelLogin": streamerLogin},
-                "extensions":{"persistedQuery":{"version":1,"sha256Hash":"059c4653b788f5bdb2f5a2d2a24b0ddc3831a15079001a3d927556a96fb0517f"}}});
+                "extensions":{"persistedQuery":{"version":1,"sha256Hash":"059c4653b788f5bdb2f5a2d2a24b0ddc3831a15079001a3d927556a96fb0517f"}}
+            });
         }
-        
+
         const data = await fetch("https://gql.twitch.tv/gql", {
             method: "POST",
             headers: {
@@ -1147,7 +1560,7 @@ class Twitch extends Platform {
             body: JSON.stringify(requestBody)
         });
         const body = JSON.parse(data.body);
-        
+
         const streamsMetadata = {};
         for(let i = 0; i < body.length; i++) {
             const stream = body[i].data.user;
@@ -1158,68 +1571,76 @@ class Twitch extends Platform {
                 profilePicture: stream.profileImageURL//.replace("70x70", "300x300") // 600x600 also works
             }
         }
-        
+
         return streamsMetadata;
     }
 
     processFriend(friend, streamsMetadata) {
-        // add friend to usersList
-        this.usersList.idToName[friend.id] = friend.login;
-        this.usersList.nameToId[friend.login] = friend.id;
+        try { // add friend to usersList
+            this.usersList.idToName[friend.id] = friend.login;
+            this.usersList.nameToId[friend.login] = friend.id;
 
-        if(friend.activity) {
-            let previousPresence = this.presenceCache[friend.id];
-            if(previousPresence) previousPresence = previousPresence();
-            // todo fetch the title of the stream, that could be cool
-            if(friend.activity.type === "WATCHING") {
-                if(!friend.activity.user.stream) // they are watching someone that is no longer streaming (their presence hasn't updated yet)
-                    return delete this.presenceCache[friend.id];
+            if(friend.activity) {
+                let previousPresence = this.presenceCache[friend.id];
+                if(previousPresence) previousPresence = previousPresence();
+                if(friend.activity.type === "WATCHING") {
+                    if(!friend.activity.user.stream || !friend.activity.user.stream.game) // they are watching someone that is no longer streaming (their presence hasn't updated yet)
+                        return delete this.presenceCache[friend.id];
 
-                const isWatchingSamePerson = previousPresence && previousPresence.details.substr(9) === friend.activity.user.displayName;
-                const away = friend.availability === "AWAY";
-                const metadata = streamsMetadata[friend.activity.user.login];
+                    const isWatchingSamePerson = previousPresence && previousPresence.details.substr(9) === friend.activity.user.displayName;
+                    const away = friend.availability === "AWAY";
+                    const metadata = streamsMetadata[friend.activity.user.login];
 
-                // the way type 3 (watching) presences are rendered is weird
-                // the large_text is shown both when hovering the image but also underneath the details (this is because that's how spotify Listening activities are rendered)
-                // in the "Active Now" tab in the friends list it only says "watching a stream" instead of rendering the whole activity like type 0 (playing) does
-                // the only reason type 3 exists in the first place is for YouTube Together as far as I can tell, so not much thought has been put into it
+                    // the way type 3 (watching) presences are rendered is weird
+                    // the large_text is shown both when hovering the image but also underneath the details (this is because that's how spotify Listening activities are rendered)
+                    // in the "Active Now" tab in the friends list it only says "watching a stream" instead of rendering the whole activity like type 0 (playing) does
+                    // the only reason type 3 exists in the first place is for YouTube Together as far as I can tell, so not much thought has been put into it
 
-                // also timestamps (01:23:45 elapsed) aren't rendered, so the presences are stored as functions
-                // when the presence is requested, the function is called and parses the current time into the large_text
+                    // also timestamps (01:23:45 elapsed) aren't rendered, so the presences are stored as functions
+                    // when the presence is requested, the function is called and parses the current time into the large_text
 
-                this.presenceCache[friend.id] = () => {return {
-                    application_id: away ? customRpcAppId : null,
-                    name: "Twitch",
-                    details: `Watching ${friend.activity.user.displayName}`,
-                    state: metadata.title,
-                    type: 3,
-                    timestamps: {start: isWatchingSamePerson ? previousPresence.timestamps.start : +new Date()},
-                    assets: {
-                        large_image: away ? "899072297216913449" : "twitch:" + friend.activity.user.login,
-                        large_text: `${friend.activity.user.stream.game.displayName} | 👤 ${metadata.viewers} | 🕐 ${this.parseStartTime(metadata.start)}`,
-                        small_image: "url:" + metadata.profilePicture,
-                        small_text: friend.activity.user.displayName
-                    },
-                    username: friend.displayName,
-                    priority: -1
-                }}
-            } else if(friend.activity.type === "STREAMING") this.presenceCache[friend.id] = () => {return {
-                name: "Twitch",
-                state: friend.activity.stream.game.displayName,
-                type: 1,
-                assets: {
-                    large_image: "twitch:" + friend.login,
-                    large_text: "As " + friend.displayName
-                },
-                url: "https://twitch.tv/" + friend.login,
-                id: "",
-                username: friend.displayName,
-                priority: 3
-            }}
+                    this.presenceCache[friend.id] = () => {
+                        return {
+                            application_id: away ? customRpcAppId : null,
+                            name: "Twitch",
+                            details: `Watching ${friend.activity.user.displayName}`,
+                            state: metadata.title,
+                            type: 3,
+                            timestamps: {start: isWatchingSamePerson ? previousPresence.timestamps.start : +new Date()},
+                            assets: {
+                                large_image: away ? "899072297216913449" : "twitch:" + friend.activity.user.login,
+                                large_text: `${friend.activity.user.stream.game.displayName} | 👤 ${metadata.viewers} | 🕐 ${this.parseStartTime(metadata.start)}`,
+                                small_image: "url:" + metadata.profilePicture,
+                                small_text: friend.activity.user.displayName
+                            },
+                            username: friend.displayName,
+                            priority: -1
+                        }
+                    }
+                } else if(friend.activity.type === "STREAMING") this.presenceCache[friend.id] = () => {
+                    return {
+                        name: "Twitch",
+                        state: friend.activity.stream.game.displayName,
+                        type: 1,
+                        assets: {
+                            large_image: "twitch:" + friend.login,
+                            large_text: "As " + friend.displayName
+                        },
+                        url: "https://twitch.tv/" + friend.login,
+                        id: "",
+                        username: friend.displayName,
+                        priority: 3
+                    }
+                }
 
-            this.log(this.presenceCache[friend.id]());
-        } else {
-            delete this.presenceCache[friend.id];
+                this.log(this.presenceCache[friend.id]());
+            } else {
+                delete this.presenceCache[friend.id];
+            }
+        } catch(e) {
+            console.error(friend, streamsMetadata);
+            console.error(e);
+            err("Error while processing Twitch friend data! " + e);
         }
     }
 
@@ -1255,10 +1676,10 @@ class Twitch extends Platform {
         const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("OAuth Key", "Your Twitch OAuth key. I should write a guide on how to get this at some point", this.oauthKey, textboxChange);
 
         const datalist = SettingsBuilder.createDatalist("twitch", Object.keys(this.usersList.nameToId));
-        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, this.usersList, discordUserList, this.discordToTwitchID, "Twitch username", /^\d+$/);
+        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, this.usersList, discordUserList, this.discordToTwitchID, null, "Twitch username", /^\d+$/);
 
         const debugSwitch = SettingsBuilder.debugSwitch(this);
-        
+
         return SettingsBuilder.settingsPanel(this, enabledSwitch, apiKeyTextbox, userMapDiv, debugSwitch);
     }
 }
@@ -1384,7 +1805,7 @@ class Riot extends Platform {
 
     getCookiesFromLauncher() {
         // I doubt this works on Mac
-        const filepath = process.env.LOCALAPPDATA + "/Riot Games/Riot Client/Data/RiotClientPrivateSettings.yaml";
+        const filepath = process.env.LOCALAPPDATA + "/Riot Games/Riot Client/Data/RiotGamesPrivateSettings.yaml";
 
         let fileContents;
         try {
@@ -1396,8 +1817,7 @@ class Riot extends Platform {
         const parsedContents = this.parseYaml(fileContents);
         if(parsedContents) {
             const cookies = [];
-            for(const cookie of parsedContents.private["riot-login"].persist.session.cookies) {
-                if(cookie.domain !== "auth.riotgames.com") continue;
+            for(const cookie of parsedContents["riot-login"].persist.session.cookies) {
                 cookies.push(cookie.name + '=' + cookie.value);
             }
             return [true, cookies.join("; ")];
@@ -1477,6 +1897,8 @@ class Riot extends Platform {
     // xmpp stuff
     establishXMPPConnection(RSO, PAS) {
         try {
+            this.presenceCache = {};
+
             const region = this.decodeToken(PAS).affinity;
             const address = this.XMPPRegionURLs[region];
             const port = 5223;
@@ -1568,13 +1990,6 @@ class Riot extends Platform {
                         bufferedMessage = data.substr(firstTagEnd); // will be empty string if only one tag
                         data = data.substr(0, firstTagEnd);
 
-                        /* ok so if someone is smart they can perform what I call "presence injection" by sending you
-                         * a DM on Riot Games that goes something like
-                         * "</presence><presence from="...">[fake presence]"
-                         * they could also override the friends list that the plugin stores, and they can force
-                         * the plugin to disconnect and reconnect, but that's about it really.
-                         */
-
                         if(firstTagName === "presence") {
                             this.valorant.processXMLData(data);
                             this.lol.processXMLData(data);
@@ -1615,6 +2030,7 @@ class Riot extends Platform {
                 if(this.reconnectInterval) return;
 
                 this.reconnectInterval = setInterval(() => {
+                    this.log("Reconnecting...");
                     this.establishXMPPConnection(RSO, PAS);
                 }, 5000);
 
@@ -1633,7 +2049,8 @@ class Riot extends Platform {
         const access_token = await this.refreshToken(this.cookies);
         if(!access_token.startsWith('e')) {
             this.log("Riot Access Token: " + access_token);
-            return err("Invalid Riot access token! Most likely your cookies are either invalid or expired.");
+            err("Invalid Riot access token! Most likely your cookies are either invalid or expired.");
+            return this.destroy();
         }
 
         const pas_token = await this.getPAS(access_token);
@@ -1733,13 +2150,14 @@ class Riot extends Platform {
                 this.cookies = cookies;
                 cookiesTextbox.children[0].children[1].children[0].value = cookies;
             } else {
-                console.error(cookies);
+                err(cookies);
             }
         }
-        const cookiesTextbox = SettingsBuilder.textboxWithButton("Auth Cookies", "Your auth.riotgames.com cookies. Will only work if you're currently logged in with 'Remember me', and until you log out.",
+        const cookiesTextbox = SettingsBuilder.textboxWithButton("Auth Cookies", "Your auth.riotgames.com cookies. Will only work if you're currently logged in with 'Remember me', and until you log out. Otherwise, use this guide.",
             this.cookies, textboxChange, {}, "Fetch cookies from launcher", buttonClick);
         setTimeout(() => {
             cookiesTextbox.children[0].children[1].children[0].removeAttribute("maxlength");
+            cookiesTextbox.children[0].children[2].innerHTML = "Your auth.riotgames.com cookies. Will only work if you're currently logged in with 'Remember me', and until you log out. Otherwise, use <a href='https://github.com/giorgi-o/SkinPeek/wiki/How-to-get-your-Riot-cookies' target='_blank'>this guide</a>."
         }, 50);
 
         const usersList = {
@@ -1750,7 +2168,8 @@ class Riot extends Platform {
             usersList.nameToId[username] = puuid;
         }
         const datalist = SettingsBuilder.createDatalist("riot", Object.keys(usersList.nameToId));
-        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToRiotPUUIDs, "Riot username", /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToRiotPUUIDs,
+            "If you see numbers instead of names, it's either because the friends list hasn't loaded, or you are no longer friends with them.", "Riot ID", /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
 
         const debugSwitch = SettingsBuilder.debugSwitch(this);
 
@@ -1873,7 +2292,7 @@ class Valorant {
             /* A bit of backstory:
              * On 21/09/2021 Riot removed map data from the presence, so you could no longer
              * know which map your friend was playing on.
-             * Except, they forgot to remove it during agent select. the plugin would store
+             * Except they forgot to remove it during agent select. So the plugin would store
              * the map data when they were in agent select, and "remember" it during the
              * actual match, even though Riot didn't send it anymore.
              * (This wouldn't work if the plugin was started mid-match or for deathmatch).
@@ -1887,7 +2306,7 @@ class Valorant {
                     // no map data, get map name from previous presence
                     if(previousPresence) {
                         const previousMapName = previousPresence.assets.large_text.split(" | ")[0];
-                        if(previousMapName !== "No map data" && previousMapName !== "In Lobby")
+                        if(previousMapName !== "No map data" && previousMapName !== "Lobby")
                             return previousMapName;
                     }
                 }
@@ -1955,7 +2374,7 @@ class Valorant {
                         if(presenceData.partyState === "CUSTOM_GAME_SETUP") return `Setting Up Custom Game`;
                         return `${presenceData.partyState} (?) - ${getGamemode()}`;
                     }
-                    const menusGetLargeText = () => (presenceData.isIdle ? "Away" : "In Lobby");
+                    const menusGetLargeText = () => (presenceData.isIdle ? "Away" : "Lobby");
 
                     presence = {
                         ...presenceBoilerplate,
@@ -1965,7 +2384,7 @@ class Valorant {
                             large_image: presenceData.isIdle ? this.assets["game_icon_yellow"] : presenceData.partyState === "CUSTOM_GAME_SETUP" ? getMapIcon(presenceData.matchMap) : this.assets["game_icon"],
                             large_text: menusGetLargeText(),
                         },
-                        priority: -2,
+                        priority: 1
                     }
                     break;
                 case "PREGAME":
@@ -2005,7 +2424,10 @@ class Valorant {
                         if(gamemode === "Custom" && presenceData.customGameTeam === "TeamSpectate")
                             s += "Spectating ";
 
-                        s += map === "Range" ? "The Range" : gamemode;
+                        if(map === "Range")
+                            s += presenceData.provisioningFlow === "NewPlayerExperience" ? "Tutorial" : "The Range";
+                        else
+                            s += gamemode;
 
                         if(presence.partyOwnerMatchCurrentTeam === "")
                             s += " - Loading";
@@ -2280,7 +2702,7 @@ class Lol {
                 }
                 presence = {
                     ...presenceBoilerplate,
-                    state: `In Game (${map})`,
+                    state: "In Game" + (map ? ` (${map})` : ""),
                     timestamps: {
                         start: data.timeStamp
                     },
@@ -2400,7 +2822,7 @@ class Epic extends Platform {
         }
         const success = await this.authenticate();
         if(success) {
-            await Promise.all([this.fetchFriendsList(), this.fetchFortniteGamemodes(), this.fetchFortniteAssets()]);
+            await Promise.all([this.fetchFortniteGamemodes(), this.fetchFortniteAssets()]);
             this.establishXMPPConnection(this.authData.token);
         } else {
             this.destroy();
@@ -2434,7 +2856,9 @@ class Epic extends Platform {
         clearInterval(this.reconnectInterval);
         clearTimeout(this.heartbeat);
         if(this.socket) {
-            this.socket.send("</stream:stream>");
+            try {
+                this.socket.send("</stream:stream>");
+            } catch(e) {console.error("Error while sending epic disconnect signal!", e)}
             this.socket.close(1000);
         }
         if(!pluginShutdown) this.saveData();
@@ -2444,6 +2868,7 @@ class Epic extends Platform {
         this.destroy();
         setTimeout(() => {
             this.enabled = true;
+            this.saveData();
             this.start();
         }, 500); // sockets take a while to close
     }
@@ -2453,12 +2878,21 @@ class Epic extends Platform {
         const json = JSON.parse(req.body);
         for(const gamemode of json.data) {
             this.fortniteGamemodes[gamemode.id.toLowerCase()] = {
-                name: gamemode.name || gamemode.id,
+                name: gamemode.name === "CREATIVE MATCHMAKING" ? "Creative (Fill)" : gamemode.name || gamemode.id, // oh epic...
                 subName: gamemode.subName,
                 maxSquadSize: gamemode.maxSquadSize,
                 maxPlayers: gamemode.maxPlayers,
                 smallIcon: gamemode.images.missionIcon
             }
+        }
+
+        // arena duos has null name/subname for some reason
+        this.fortniteGamemodes["playlist_showdownalt_duos"] = {
+            name: "Arena",
+            subName: "Duos",
+            maxSquadSize: 2,
+            maxPlayers: 100,
+            smallIcon: "https://fortnite-api.com/images/playlists/playlist_showdownalt_duos/missionicon.png"
         }
     }
 
@@ -2489,10 +2923,13 @@ class Epic extends Platform {
                 const expiry = this.getTokenExpiry(this.authData.token);
                 this.log("Token expiring at " + expiry);
                 if(expiry - new Date() > 300_000) {
-                    // use the token
-                    // todo handle the token being invalid (e.g. in case of password reset)
-                    this.setupRefreshTimeout();
-                    return true;
+                    // fetch friends list to see if token is valid
+                    const success = await this.fetchFriendsList();
+                    if(success) {
+                        // use the token
+                        this.setupRefreshTimeout();
+                        return true;
+                    }
                 }
             }
 
@@ -2529,7 +2966,7 @@ class Epic extends Platform {
             const r = this.authData.refresh;
             const errorMessage = r.length > 20 ? authData.errorMessage.replace(r,  r.substr(0, 10) + "..." + r.substr(r.length - 10)) : r;
 
-            err("Could not refresh token! " + errorMessage);
+            err("EPIC: Could not refresh token! You may need to login again. " + errorMessage);
             return false;
         }
 
@@ -2617,7 +3054,16 @@ class Epic extends Platform {
         if(req.statusCode !== 200) {
             console.error(req);
             console.error(this.authData);
-            return err("Error while fetching Epic friends!");
+
+            if(req.statusCode.toString().startsWith('5')) {
+                console.error(`Error ${req.statusCode} when trying to fetch friends list! Retrying in 5 seconds...`);
+                await new Promise(r => setTimeout(r, 5000));
+                return await this.fetchFriendsList()
+            } else if(req.statusCode !== 401) {
+                err("Error while fetching Epic friends!");
+            }
+
+            return false;
         }
 
         // get username of friends
@@ -2649,11 +3095,14 @@ class Epic extends Platform {
         }
 
         this.log(this.epicIdToDisplayName);
+        return true;
     }
 
     // xmpp stuff
     establishXMPPConnection(token) {
         try {
+            this.presenceCache = {};
+
             const address = "xmpp-service-prod.ol.epicgames.com";
             const accountId = this.getID(token);
 
@@ -2698,8 +3147,8 @@ class Epic extends Platform {
             let lastPing = 0;
             const sendPing = () => {
                 if(lastPing > 0 && Date.now() - lastPing > 150_000) {
-                    this.log("Haven't recieved a ping back in 150sec, reconnecting...");
-                    this.restart();
+                    this.log("Haven't received a ping back in 150sec, reconnecting...");
+                    return this.restart();
                 }
 
                 send("<iq xmlns=\"jabber:client\" id=\"acbeabf8-b04b-4e94-a044-6d6b8f04514e\" type=\"get\"><ping xmlns=\"urn:xmpp:ping\"/></iq>", false);
@@ -2716,7 +3165,6 @@ class Epic extends Platform {
                         this.log("<- " + data);
 
                     if(data.startsWith("<failure")) {
-                        // err("Epic auth failure, restarting...");
                         this.restart();
                     }
                     else if(messages.length > 0) sendNext();
@@ -2738,6 +3186,7 @@ class Epic extends Platform {
                 if(this.reconnectInterval) return;
 
                 this.reconnectInterval = setInterval(() => {
+                    this.log("Reconnecting...");
                     this.establishXMPPConnection(token);
                 }, 5000);
 
@@ -2758,12 +3207,19 @@ class Epic extends Platform {
         const fullId = presence.substring(idStart, fullIdEnd);
         const presenceSource = fullId.split(":")[1];
 
+        let show;
+        const showStart = presence.indexOf("<show>") + 6;
+        if(showStart > 5) {
+            const showEnd = presence.indexOf("</show>", showStart);
+            show = presence.substring(showStart, showEnd);
+        }
+
         const statusStart = presence.indexOf("<status>") + 8;
         if(statusStart === 7) return;
         const statusEnd = presence.indexOf("</status>", statusStart);
         const status_raw = presence.substring(statusStart, statusEnd);
         const status = JSON.parse(status_raw);
-        this.log(status)
+        this.log(status);
 
         let presenceType;
         if(presence.includes("type=")) {
@@ -2780,10 +3236,10 @@ class Epic extends Platform {
             timestamp = +new Date(presence.substring(timestampStart, timestampEnd));
         }
 
-        this.renderPresence(id, presenceSource, status, presenceType, timestamp);
+        this.renderPresence(id, presenceSource, status, presenceType, show, timestamp);
     }
 
-    async renderPresence(id, presenceSource, status, presenceType, timestamp) {
+    async renderPresence(id, presenceSource, status, presenceType, show, timestamp) {
         const epicLogoID = "896045315323486238";
         const rlLogoID = "897981076146896937";
 
@@ -2877,23 +3333,32 @@ class Epic extends Platform {
             case "Fortnite":
                 try {
                     const gamemode = this.fortniteGamemodes[(status.Properties.GamePlaylistName_s || "").toLowerCase()] || {name: status.Properties.GamePlaylistName_s || "", maxSquadSize: 0, maxPlayers: 100};
+                    const partyData = Object.keys(status.Properties).filter(s => s.startsWith("party.joininfodata"))[0];
+
+                    const detailsTemplate = (name, subName) => name + (subName ? ` (${subName})` : "");
+                    const stateTemplate = (kills, players, maxPlayers=100) => `💀 ${kills}  👤 ${players}/${maxPlayers}`; // thin space because discord removes double spaces
 
                     let details, state;
                     if(status.bIsPlaying) {
                         const kills = parseInt(status.Properties.FortGameplayStats_j.numKills);
-                        if(status.bIsJoinable) {
-                            details = gamemode.name === "CREATIVE MATCHMAKING" ? `Creative Fill` : gamemode.name || "Creative";
-                            if(status.Properties.ServerPlayerCount_i) details += ` - ${status.Properties.ServerPlayerCount_i}/${gamemode.maxPlayers} - ${kills} kill${kills === 1 ? "" : "s"}`;
-                            else details += " - Loading";
-                        } else {
-                            if(status.Properties.ServerPlayerCount_i) details = `${gamemode.name} - ${status.Properties.ServerPlayerCount_i} left - ${kills} kill${kills === 1 ? "" : "s"}`;
-                            else details = `${gamemode.name} - Loading`;
+                        if(status.bIsJoinable) { // creative
+                            details = detailsTemplate(gamemode.name || "Creative", gamemode.subName);
+
+                            if(status.Properties.ServerPlayerCount_i) state = stateTemplate(kills, status.Properties.ServerPlayerCount_i, gamemode.maxPlayers || 16);
+                            else state = "Loading";
+                        } else if(status.Properties.GamePlaylistName_s) { // battle royale
+                            details = detailsTemplate(gamemode.name || status.Properties.GamePlaylistName_s, gamemode.subName);
+
+                            if(status.Properties.ServerPlayerCount_i) state = stateTemplate(kills, status.Properties.ServerPlayerCount_i);
+                            else state = `Loading`;
                         }
-                        if(status.Properties.FortGameplayStats_j.bFellToDeath) state = "Died of fall damage";
-                        else state = (gamemode.subName ? `${gamemode.subName} - ` : "") + "In Game";
-                    } else {
-                        details = `${gamemode.name}`;
-                        state = (gamemode.subName ? `${gamemode.subName} - ` : "") + "In the Lobby";
+                        if(status.Properties.FortGameplayStats_j.bFellToDeath) state += " - Died of fall damage";
+                    } else if (status.Properties.FortGameplayStats_j) { // in the lobby, hasn't launched a gamemode yet
+                        if(gamemode.name) details = detailsTemplate(gamemode.name || status.Properties.GamePlaylistName_s, gamemode.subName);
+                        if(show === "xa" || show === "away") state = "Away - In the Lobby";
+                        else state = "In the Lobby";
+                    } else { // game loading
+                        details = "Loading";
                     }
 
                     const partySize = status.Properties.FortPartySize_i || status.Properties.Event_PartySize_s;
@@ -2923,11 +3388,10 @@ class Epic extends Platform {
                     if(previousPresence.gameId === presence.gameId)
                         presence.timestamps.start = previousPresence.timestamps.start;
 
-                    const partyData = Object.keys(status.Properties).filter(s => s.startsWith("party.joininfodata"))[0];
                     if(partyData) {
                         const partyInfo = status.Properties[partyData];
-                        presence.username = partyInfo.sourceDisplayName;
-                        presence.party.id = partyInfo.partyId;
+                        if(partyInfo.sourceDisplayName) presence.username = partyInfo.sourceDisplayName;
+                        if(partyInfo.partyId) presence.party.id = partyInfo.partyId;
                     }
                 } catch(e) {
                     console.error(presence);
@@ -3056,20 +3520,658 @@ class Epic extends Platform {
             usersList.nameToId[username] = id;
         }
         const datalist = SettingsBuilder.createDatalist("epic", Object.keys(usersList.nameToId));
-        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToEpicID, "Epic username", /^.+$/);
+        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToEpicID,
+            "If you see numbers instead of names, it's either because the friends list hasn't loaded, or you are no longer friends with them.","Epic username", /^.+$/);
 
         const debugSwitch = SettingsBuilder.debugSwitch(this);
-        
+
         return SettingsBuilder.settingsPanel(this, enabledSwitch, tokenTextbox, authCodeTextbox, exchangeCodeTextbox, userMapDiv, debugSwitch);
     }
 }
+
+/**********
+ **  EA  **
+ **********/
+
+class EA extends Platform {
+
+    constructor() {
+        super("ea");
+
+        this.eaLogoAssetId = "950210006509289492";
+        this.apexRpcAppId = "893911040713191444"; // https://github.com/Holfz/ApexRPC
+
+        this.apexAssetNames = {
+            "Logo": "apex-legends",
+            "Training": "firing-range",
+            "World's Edge": "world-edge",
+            "King's Canyon": "king-canyon",
+            "Olympus": "olympus",
+            "Stormpoint": "stormpoint",
+            "Encore": "encore"
+        }
+
+        this.presenceCache = {};
+        this.friendIdToDisplayName = {};
+        this.assetCache = {};
+        this.apexAssets = {};
+
+        this.loadData();
+        if(this.enabled) {
+            this.start();
+        }
+    }
+
+    async start() {
+        if(!this.remid) return this.destroy();
+        this.fetchApexAssets();
+        const accessToken = await this.authenticate(this.remid);
+        await this.getFriendsList();
+        if(accessToken) await this.connectWebsocket(accessToken);
+    }
+
+    serializeData() {
+        return {
+            enabled: this.enabled || false,
+            remid: this.remid || "",
+            usersMap: this.discordToEaIDs || {},
+            debug: this.debug || false
+        }
+    }
+
+    deserializeData(data) {
+        this.enabled = data.enabled || false;
+        this.remid = data.remid || "";
+        this.discordToEaIDs = data.usersMap || {};
+        this.debug = data.debug || false;
+    }
+
+    async fetchApexAssets() {
+        const req = await fetch(`https://discord.com/api/v9/oauth2/applications/${this.apexRpcAppId}/assets`);
+        const json = JSON.parse(req.body);
+        for(const asset of json) {
+            this.apexAssets[asset.name] = asset.id;
+        }
+    }
+
+    async authenticate(remid) {
+        // step 1
+        const req1 = await fetch("https://accounts.ea.com/connect/auth?" +
+            "client_id=JUNO_PC_CLIENT&" +
+            "response_type=code&" +
+            "nonce=1&" +
+            "pc_sign=eyJhdiI6InYxIiwiYnNuIjoiRzJDN002MyIsImdpZCI6Mzk4NzYsImhzbiI6IkFSUkFZMCIsIm1hYyI6IiQwMGZmOWJiNGMyYTAiLCJtaWQiOiI3NTc3MTg0MDY1MDM5NjIzNTkxIiwibXNuIjoiLkcyQzdNNjMuQ05DTUswMDA5NDAwMjYuIiwic3YiOiJ2MSIsInRzIjoiMjAyMi0yLTI3IDEzOjM1OjQyOjI0NiJ9.XPSVI2ksrbveN_FcG2ep_1QpqLphs-cWZRgcsSnIfsI&" +
+            "", {
+            headers: {
+                "Cookie": `remid=${remid}`,
+            }
+        });
+        this.log(req1);
+
+        if(!req1.headers['set-cookie']) {
+            BdApi.alert("Could not login to EA! Most likely your RemID is invalid.");
+            this.remid = "";
+            this.destroy();
+            return;
+        }
+
+        const remidHeader = req1.headers['set-cookie'][0];
+        remid = remidHeader.split('=')[1].split(';')[0];
+        this.log("New RemID: " + remid);
+        this.remid = remid;
+        this.saveData();
+
+        const redirectUrl = req1.headers.location;
+        const code = redirectUrl.match(/code=(.+)&?/)[1];
+        this.log("Auth Code: " + code);
+
+        // step 2
+        const req2 = await fetch("https://accounts.ea.com/connect/token", {
+            method: "POST",
+            headers: {
+                "content-type": "application/x-www-form-urlencoded"
+            },
+            body:
+                "grant_type=authorization_code" +
+                `&code=${code}&` +
+                "client_id=JUNO_PC_CLIENT&" +
+                "client_secret=4mRLtYMb6vq9qglomWEaT4ChxsXWcyqbQpuBNfMPOYOiDmYYQmjuaBsF2Zp0RyVeWkfqhE9TuGgAw7te&" +
+                ""
+        });
+        this.log(req2);
+
+        const authResponse = JSON.parse(req2.body)
+        this.log(authResponse);
+
+        authResponse.accessTokenExpires = Date.now() + authResponse.expires_in * 1000;
+        this.auth = authResponse;
+        return authResponse.access_token;
+    }
+
+    getRemIDFromEaApp() {
+        // I doubt this works on Mac
+        const filepath = process.env.LOCALAPPDATA + "/Electronic Arts/EA Desktop/cookie.ini";
+
+        let fileContents;
+        try {
+            fileContents = fs.readFileSync(filepath).toString();
+        } catch(e) {
+            return [false, e];
+        }
+
+        for(const line of fileContents.split('\n')) {
+            if(line.startsWith("remid=")) {
+                fs.unlinkSync(filepath);
+                return [true, line.substring(26)];
+            }
+        }
+
+        return [false, "Could not parse file! Is it corrupt?"];
+    }
+
+    async getFriendsList() {
+        this.log("Fetching friends list...");
+
+        const req = await fetch("https://service-aggregation-layer.juno.ea.com/graphql?" +
+            "operationName=GetMyFriends&" +
+            "variables=%7B%22offset%22%3A0%2C%22limit%22%3A99%7D&" +
+            "extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22f8856d3ce53eac1d88ee1780851888a25575fad4f142e7b6142c0ace28797baa%22%7D%7D", {
+            headers: {
+                "Authorization": `Bearer ${this.auth.access_token}`,
+            }
+        });
+        const json = JSON.parse(req.body);
+        this.log(json);
+
+        for(const friendData of json.data.me.friends.items) {
+            if(!friendData.player.uniqueName) continue; // ghost friend
+            this.friendIdToDisplayName[friendData.id] = friendData.player.displayName;
+        }
+
+        this.log(this.friendIdToDisplayName);
+    }
+
+    async connectWebsocket(accessToken) {
+        if(!this.enabled) return;
+
+        const sock = new SimpleSocket("wss://rtm.tnt-ea.com:8095/websocket", {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) QtWebEngine/5.15.2 Chrome/83.0.4103.122 Safari/537.36 Origin/10.6.0.00000 EAApp/12.0.179.5090"
+            }
+        });
+        this.socket = sock;
+
+        sock.onconnect = () => {
+            this.log("Connected to WebSocket!");
+
+            clearInterval(this.reconnectInterval);
+            this.reconnectInterval = null;
+
+            this.messageNumber = 0;
+            this.login(accessToken);
+
+            this.heartbeat = setInterval(this.sendHeartbeat.bind(this), 10000);
+        }
+        sock.onmessage = this.messageReceived.bind(this);
+        sock.onclose = () => {
+            if(!this.enabled || sock !== this.socket) return this.log("Websocket disconnected!");
+            console.error("EA disconnected! Retrying in 5 seconds...");
+
+            if(this.reconnectInterval) return;
+
+            this.reconnectInterval = setInterval(async () => {
+                if(this.auth.accessTokenExpires - Date.now() < 10_000) {
+                    accessToken = await this.authenticate(this.remid);
+                }
+
+                this.log("Reconnecting...");
+                this.connectWebsocket(accessToken);
+            }, 5000);
+
+            clearTimeout(this.heartbeat);
+        }
+    }
+
+    varInt(int) {
+        const bytes = [];
+        while (true) {
+            if ((int & ~0x7F) === 0) {
+                bytes.push(int);
+                return Buffer.from(bytes);
+            }
+            bytes.push((int & 0x7F) | 0x80);
+            int >>>= 7;
+        }
+    }
+
+    readVarInt (buf, start=0) {
+        let value = 0;
+        let i = start;
+        let currentByte;
+
+        do {
+            currentByte = buf[i];
+            value |= ((currentByte & 0x7F) << (7 * (i - start)));
+            i++;
+        } while ((currentByte & 0x80) !== 0);
+
+        return [value, i];
+    }
+
+    readString(buf, start) {
+        // start is the index of the string length, not the string itself
+        const [length, lengthEnd] = this.readVarInt(buf, start);
+        const subarray = buf.subarray(lengthEnd, lengthEnd + length);
+        return [subarray.toString(), lengthEnd + length];
+    }
+
+    stringifyBuffer = (buf, step=25) => {
+        const lines = [];
+        for(let i = 0; i < buf.length; i += step) {
+            let line = [...buf.slice(i, i + step)];
+            let s = "";
+            s += (line.map(n => n.toString(16).toUpperCase().padStart(2, '0')).join(' ')).padEnd(step * 3 - 1, ' ');
+            s += " | ";
+            s += line.map(n => 32 <= n && n <= 126 ? String.fromCharCode(n) : '.').join('');
+            lines.push(s);
+        }
+        return lines.join('\n');
+    }
+
+    messageReceived(buf) {
+        this.log(" <-\n" + this.stringifyBuffer(buf));
+
+        try { // check if buffer has timestamp
+            const [bufferLength, bufferLengthEnd] = this.readVarInt(buf, 5);
+            if(buf[bufferLengthEnd] === 0x0A) {
+                // there is a timestamp
+                const [timestampString, timestampStringEnd] = this.readString(buf, bufferLengthEnd + 1);
+                const timestamp = timestampString.split('-')[2];
+
+                const packetTypeIndex = timestampStringEnd;
+                const packetType = buf[packetTypeIndex];
+                switch (packetType) {
+                    case 0x7A:
+                        // Auth response
+                        this.log("Got auth response!");
+
+                        const [messageLength1, messageLength1End] = this.readVarInt(buf, packetTypeIndex + 1);
+                        const [messageLength2, messageLength2End] = this.readVarInt(buf, messageLength1End + 1);
+
+                        const [ownIdString, ownIdEnd] = this.readString(buf, messageLength2End + 1);
+                        this.ownId = ownIdString.split(':')[1];
+                        this.log("My id is " + this.ownId);
+
+                        this.requestOwnPresence();
+                        this.requestFriendsList();
+                        this.requestOwnPresence();
+                        this.requestFriendPresences();
+                        break;
+                    case 0x92:
+                        // friends list
+                        this.log("Got friends list!");
+
+                        const [packetType, packetTypeEnd] = this.readVarInt(buf, packetTypeIndex);
+                        const [restOfMessageLength, restOfMessageLengthEnd] = this.readVarInt(buf, packetTypeEnd);
+
+                        let currentFriendIndex = restOfMessageLengthEnd + 1;
+                        let nextFriendIndex;
+                        while(true) {
+                            const [friendPacketLength, friendPacketLengthEnd] = this.readVarInt(buf, currentFriendIndex);
+                            nextFriendIndex = friendPacketLengthEnd + friendPacketLength;
+
+                            const [friendshipString, friendshipStringEnd] = this.readString(buf, friendPacketLengthEnd + 1);
+
+                            this.requestFriendInfo(friendshipString);
+
+                            currentFriendIndex = nextFriendIndex + 1;
+                            if(nextFriendIndex >= buf.length) break;
+                        }
+
+                        break;
+                    case 0x62:
+                        // friend name
+                        this.log("Got friend name!");
+
+                        const [restOfPacketLength, restOfPacketLengthEnd] = this.readVarInt(buf, packetTypeIndex + 1);
+
+                        const [friendshipString, friendshipStringEnd] = this.readString(buf, restOfPacketLengthEnd + 1);
+
+                        // ea sends name for both users in the relationship
+                        const [user1PartLength, user1PartLengthEnd] = this.readVarInt(buf, friendshipStringEnd + 1);
+                        const [user1Id, user1IdEnd] = this.readString(buf, user1PartLengthEnd + 1);
+                        const [user1DisplayName, user1DisplayNameEnd] = this.readString(buf, user1IdEnd + 1);
+
+                        if(buf[user1PartLengthEnd + user1PartLength] === 0x18) {
+                            // idk what ghost friends are. They don't show up on Origin, and show up as a glitched
+                            // empty name on EA Desktop. Maybe someone who deleted their account?
+                            return this.log("It's a ghost friend!");
+                        }
+
+                        const [user2PartLength, user2PartLengthEnd] = this.readVarInt(buf, user1PartLengthEnd + user1PartLength + 1);
+                        const [user2Id, user2IdEnd] = this.readString(buf, user2PartLengthEnd + 1);
+                        const [user2DisplayName, user2DisplayNameEnd] = this.readString(buf, user2IdEnd + 1);
+
+                        this.friendIdToDisplayName[user1Id] = user1DisplayName;
+                        this.friendIdToDisplayName[user2Id] = user2DisplayName;
+
+                        if(user1Id === this.ownId) this.log(`${user2Id}'s name is ${user2DisplayName}`);
+                        else if(user2Id === this.ownId) this.log(`${user1Id}'s name is ${user1DisplayName}`);
+                        else console.error("[EA] Friendship has two IDs and none match own id! " + friendshipString);
+
+                        break;
+                }
+            } else if(buf[bufferLengthEnd] === 0x3A) {
+                // there is no timestamp
+                const [bufferLengthAgain, bufferLengthAgainEnd] = this.readVarInt(buf, bufferLengthEnd + 1);
+                const [userId, userIdEnd] = this.readString(buf, bufferLengthAgainEnd + 1);
+
+                const packetTypeIndex = userIdEnd;
+                const packetType = buf[packetTypeIndex];
+                switch (packetType) {
+                    case 0x12:
+                        // presence
+                        if(userId === this.ownId) this.log("Received my own presence");
+                        else this.log("Received presence for user " + userId);
+
+                        const [presenceJson, presenceJsonEnd] = this.readString(buf, packetTypeIndex + 1);
+                        const presence = JSON.parse(presenceJson);
+                        this.log(presence);
+
+                        if(presence.gameActivity_richPresence) this.log(JSON.parse(presence.gameActivity_richPresence));
+
+                        const [timestamp, timestampEnd] = this.readString(buf, presenceJsonEnd + 1);
+
+                        this.processPresence(userId, presence, +new Date(timestamp)); // does this work with timezones?
+
+                        break;
+                    case 0x28:
+                        // no presence for user
+                        this.log("Received no presence for user " + userId);
+
+                        delete this.presenceCache[userId];
+                        break;
+                }
+            } else {
+                if(
+                    buf[bufferLengthEnd] !== 0xC2 && // "session changed"
+                    buf[bufferLengthEnd] !== 0x82 && // game invite
+                    buf[bufferLengthEnd] !== 0x72 // unknown, short buffer e.g. "00 00 00 04 0A 02 72 00"
+                ) {
+                    if(this.debug) err("Neither 0A or 3A after message! " + buf[bufferLengthEnd].toString(16));
+                }
+            }
+        } catch(e) {
+            err(e);
+        }
+    }
+
+    send(buf, log=true) {
+        if(log) this.log(" ->\n" + this.stringifyBuffer(buf));
+        this.socket.send(buf);
+    }
+
+    encodeString(s) {
+        const stringLength = this.varInt(s.length);
+        const stringEncoded = Buffer.from(s, 'utf-8');
+        return Buffer.concat([stringLength, stringEncoded]);
+    }
+
+    createTimestampBuffer() {
+        const timestamp = Date.now();
+        const timestampString = `c-${this.messageNumber++}-${timestamp}-${timestamp}`;
+        return this.encodeString(timestampString);
+    }
+
+    formatAndSendBuffer(buf, log=true) {
+        try {
+            const timestampBuffer = this.createTimestampBuffer();
+
+            const totalLength = timestampBuffer.length + buf.length;
+            const totalLengthVarInt = this.varInt(totalLength + 1);
+            const totalLength32Bit = Buffer.allocUnsafe(4);
+            totalLength32Bit.writeUint32BE(totalLength + totalLengthVarInt.length + 2);
+
+            const newline = Buffer.from([0x0A]);
+            const header = Buffer.concat([totalLength32Bit, newline, totalLengthVarInt, newline]);
+
+            this.send(Buffer.concat([header, timestampBuffer, buf]), log);
+        } catch(e) {
+            err(e);
+        }
+    }
+
+    login(accessToken) {
+        try {
+            const packetType = Buffer.from([0xF2, 0x02]);
+
+            const newline = Buffer.from([0x0A]);
+            const accessTokenBuffer = this.encodeString(accessToken);
+            const middleData = Buffer.from([0x10, 0x00, 0x18, 0x00, 0x20, 0x00, 0x2A, 0x06, 0x6F, 0x72, 0x69, 0x67, 0x69, 0x6E, 0x30, 0x04, 0x3A]);
+            const platformJson = this.encodeString('{"clientType":"ClientWeb","version":"juno-spa-0.0.1-15146-80d8a20","integrations":"LoginV3"}');
+
+            const restOfPacketLengthBuffer = this.varInt(newline.length + accessTokenBuffer.length + middleData.length + platformJson.length);
+
+            const handshakeBuffer = Buffer.concat([packetType, restOfPacketLengthBuffer, newline, accessTokenBuffer, middleData, platformJson]);
+            this.formatAndSendBuffer(handshakeBuffer);
+        } catch(e) {
+            err(e);
+        }
+    }
+
+    sendHeartbeat() {
+        try { // the function is called in setInterval, so any unhandled error will crash the whole discord
+            this.formatAndSendBuffer(Buffer.from([0xA2, 0x01, 0x00]), false);
+        } catch(e) {
+            err(e);
+        }
+    }
+
+    requestFriendsList() {
+        const body = Buffer.from([0xD2, 0x02, 0x08, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01]);
+        this.formatAndSendBuffer(body);
+    }
+
+    requestFriendInfo(friendshipString) {
+        const bodyHeader = Buffer.from([0x5A, 0x2B, 0x0A]);
+        const friendshipStringBuffer = this.encodeString(friendshipString);
+        this.formatAndSendBuffer(Buffer.concat([bodyHeader, friendshipStringBuffer]));
+    }
+
+    requestOwnPresence() {
+        const header = Buffer.from([0x12, 0x19, 0x12, 0x17, 0x0A]);
+        const ownIdBuffer = this.encodeString(this.ownId);
+        const middleNumber = Buffer.from([0x12]);
+        const originString = this.encodeString("origin");
+        this.formatAndSendBuffer(Buffer.concat([header, ownIdBuffer, middleNumber, originString]));
+    }
+
+    requestFriendPresences() {
+        this.formatAndSendBuffer(Buffer.from([0x9A, 0x03, 0x00]));
+    }
+
+    async processPresence(id, data, timestamp) {
+        try {
+            if(data.gameActivity_isNull) return delete this.presenceCache[id];
+            if(data.presence_null === undefined) return; // own status (not presence, just online/away/invisible)
+
+            const presenceData = JSON.parse(data.gameActivity_gamePresence);
+            const richPresenceData = data.gameActivity_richPresence ? JSON.parse(data.gameActivity_richPresence) : {};
+            const gameArtUrl = await this.getGameArt(data.gameActivity_productId)
+            const presence = {
+                application_id: customRpcAppId,
+                name: data.gameActivity_gameTitle,
+                details: richPresenceData.data,
+                type: 0,
+                timestamps: {start: timestamp},
+                assets: {
+                    large_image: gameArtUrl ? `url:${gameArtUrl}` : this.eaLogoAssetId
+                },
+                username: this.friendIdToDisplayName[id],
+                priority: 1,
+                session: presenceData.data.session
+            };
+
+            const previousPresence = this.presenceCache[id];
+            const wasPlayingSameGame = previousPresence && previousPresence.name === presence.name;
+            const status = richPresenceData.data;
+
+            switch (data.gameActivity_productId) {
+                case "Origin.OFR.50.0002694": { // Apex Legends
+                    presence.application_id = this.apexRpcAppId;
+                    presence.assets.large_image = this.apexAssets[this.apexAssetNames["Logo"]];
+
+                    let match = status.match(/(.+) - (.+)/);
+                    if(match) {
+                        const map = match[1];
+                        presence.assets.large_image = this.apexAssets[this.apexAssetNames[map]] || `url:${gameArtUrl}`;
+
+                        presence.details = "Playing " + match[2]; // gamemode
+                        match = status.match(/(.+) - (.+) \((.+)\)/);
+                        if(match) {
+                            presence.state = match[3]; // "10 Squads Left"
+                        }
+                    }
+
+                    if(wasPlayingSameGame && presence.session === previousPresence.session) {
+                        presence.timestamps = previousPresence.timestamps;
+                    }
+                    break;
+                }
+                case "Origin.OFR.50.0004567": { // FIFA 22
+                    let match = status.match(/^\((.+)\)$/);
+                    if(match) presence.details = match[1];
+
+                    match = status.match(/^(.+) (\d+-\d+ [A-Za-z]{1,3} [V\-] [A-Za-z]{1,3}.+$)/);
+                    if(match) {
+                        presence.details = "Playing " + match[1];
+                        presence.state = match[2];
+
+                        if(wasPlayingSameGame && previousPresence.state) {
+                            presence.timestamps = previousPresence.timestamps;
+                        }
+                    }
+
+                    match = status.match(/^(.+) \((.+)\)$/);
+                    if(match) {
+                        presence.details = match[1];
+                        presence.state = match[2];
+                    }
+                    break;
+                }
+                default: {
+                    if(previousPresence && status === previousPresence.details) {
+                        presence.timestamps = previousPresence.timestamps;
+                    }
+                }
+            }
+
+            this.presenceCache[id] = presence;
+            this.log(presence);
+        } catch(e) {
+            console.error(id, data, timestamp);
+            err(e);
+        }
+    }
+
+    async getGameArt(productId) {
+        try {
+            if(this.assetCache[productId]) return this.assetCache[productId];
+
+            const req = await fetch("https://service-aggregation-layer.juno.ea.com/graphql?" +
+                "operationName=inGamePresenceData&" +
+                `variables=%7B%22locale%22%3A%22en%22%2C%22offerIds%22%3A%5B%22${productId}%22%5D%7D&` +
+                "extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%226d7316368c350bbf3de50676add3d1d00d73021270f9d365e5a5e388fd9741c8%22%7D%7D");
+            const json = await JSON.parse(req.body);
+
+            this.assetCache[productId] = json.data.gameProducts.items[0].baseItem.keyArt.aspect1x1Image.path;
+            return json.data.gameProducts.items[0].baseItem.keyArt.aspect1x1Image.path;
+        } catch(e) {
+            console.error(e);
+            err("Could not get game art for game " + productId);
+        }
+    }
+
+    getPresence(discord_id) {
+        return super.getPresence(discord_id, this.discordToEaIDs, this.presenceCache);
+    }
+
+    getSettings(discordUserList, discordUsersDatalist) {
+        // enabled switch
+        const enabledSwitch = SettingsBuilder.enabledSwitch(this);
+
+        // cookies textbox
+        const textboxChange = (value) => {
+            this.cookies = value;
+            if(this.enabled) {
+                SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
+            }
+        }
+        const buttonClick = () => {
+            BdApi.showConfirmationModal("Warning", "Fetching your RemID will log you out of the EA App. Are you sure?", {
+                danger: true,
+                confirmText: "Yes, I'm sure",
+                onConfirm: getRemID
+            });
+        }
+        const getRemID = () => {
+            const button = remidTextbox.children[0].children[1].children[1];
+            button.classList.remove("bd-button-danger");
+            button.innerHTML = "Fetching...";
+
+            const [success, remid] = this.getRemIDFromEaApp();
+            if(success) {
+                this.cookies = remid;
+                remidTextbox.children[0].children[1].children[0].value = remid;
+                button.innerHTML = "Success!";
+                this.saveData();
+            } else {
+                const error = remid;
+                button.classList.add("bd-button-danger");
+                if(error.message && error.message.includes("no such file")) {
+                    button.innerHTML = "File not found";
+                } else {
+                    button.innerHTML = "Failed";
+                    console.error(error);
+                    BdApi.alert(error.message);
+                }
+            }
+        }
+        const remidTextbox = SettingsBuilder.textboxWithButton("RemID Cookie", "Your EA RemID cookie. Fetching it only works on the new 'EA App', not Origin.",
+            this.remid, textboxChange, {}, "Fetch RemID from EA App", buttonClick);
+
+        const usersList = {
+            idToName: this.friendIdToDisplayName,
+            nameToId: {}
+        }
+        for(const [id, username] of Object.entries(this.friendIdToDisplayName)) {
+            usersList.nameToId[username] = id;
+        }
+        const datalist = SettingsBuilder.createDatalist("ea", Object.keys(usersList.nameToId));
+        const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, usersList, discordUserList, this.discordToEaIDs, null, "EA Username", /^\d+$/);
+
+        const debugSwitch = SettingsBuilder.debugSwitch(this);
+
+        return SettingsBuilder.settingsPanel(this, enabledSwitch, remidTextbox, userMapDiv, debugSwitch);
+    }
+
+    destroy(pluginShutdown) {
+        this.enabled = false;
+        this.presenceCache = {};
+        clearInterval(this.heartbeat);
+        clearInterval(this.reconnectInterval);
+        if(this.socket) this.socket.close(1001);
+        if(!pluginShutdown) this.saveData();
+    }
+}
+
 
 
 /**************
  **  PLUGIN  **
  **************/
 
-const platforms = [Riot, Epic, Steam, Minecraft, Twitch];
+const platforms = [Riot, Epic, Steam, EA, Minecraft, Twitch];
 
 module.exports = (() => {
     const config = {
@@ -3080,7 +4182,7 @@ module.exports = (() => {
                 "discord_id": "316978243716775947",
                 "github_username": "giorgi-o"
             }],
-            "version": "0.2.2",
+            "version": "0.2.3",
             "description": "Show what people are playing on other platforms such as Steam and Valorant",
             "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
             "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
@@ -3129,13 +4231,32 @@ module.exports = (() => {
                     // added: green, improved: blurple, fixed: red, progress: yellow
                     const changelog = [
                         {
-                            title: "Changelog",
+                            title: "EA",
+                            type: "added",
+                            items: [
+                                "Added EA support! This took me a while because there is absolutely no documentation online whatsoever, but it's finally done.",
+                                "I've only tested it with Apex and FIFA, and I haven't tested it much, so let me know if there is anything I overlooked.",
+                                "Just like the other platforms, I'll do a write-up on the GitHub wiki on how it works and what I've found."
+                            ]
+                        },
+                        {
+                            title: "Minecraft",
+                            type: "improved",
+                            items: [
+                                "Added Minecraft private server support as well!",
+                                "By default, Minecraft servers send basic data to anyone that asks, such as how many players are online, as well as which ones, but only up to 8-12 players.",
+                                "This is mainly geared towards small private servers, as most public servers disable the sample player list anyways."
+                            ]
+                        },
+                        {
+                            title: "Is anyone even reading this?",
                             type: "progress",
                             items: [
-                                "Ironically, fixed JSON error when trying to read changelog",
-                                "Double ironically, Discord broke changelogs in the last update so most of you won't actually see this.",
-                                "Added support for private Minecraft servers, although no way to configure it atm",
-                                "A bunch of other fixes I made along the way, check the github diff :)"
+                                "Hey guys! So it's been a while, huh.",
+                                "I don't even know why I spent so long banging my head to get EA working. It involved staring at binary data for many hours on end, and that's once I figured out how to intercept the data in the first place. Funny thing is, I don't even play any games on EA, I just thought it would be easy, and then refused to give up once it got hard.",
+                                "Anyways, if you're using this plugin, don't hesitate to shoot me a DM! Other than the few GitHub stars, for all I know I could be the only one using my plugin haha :)",
+                                "I'm actually wondering what I should do next! I'm thinking of implementing proper Steam support, as it seems to be well documented ever since Valve open-sourced Steamworks a few years ago, but if you have any ideas, please tell me! Bonus points if it's already somewhat documented.",
+                                "Regardless, I really enjoy developing this plugin, and I hope you enjoy using it as well. See you probably in 2 months!"
                             ]
                         }
                     ];
@@ -3150,7 +4271,7 @@ module.exports = (() => {
                                         version: version,
                                         hasShownChangelog: true
                                     });
-                                } catch(e) {console.error(e)} // atm ZLibrary modals don't work
+                                } catch(e) {console.error(e)}
                             }, 5000);
                         }
                     } catch(e) {
@@ -3204,10 +4325,13 @@ module.exports = (() => {
                     // Required function. Called when the plugin is deactivated
                     BdApi.Patcher.unpatchAll(pluginName);
 
-                    for(const platform of this.instances) {
-                        platform.destroy(true);
-                    }
+                    for(const platform of this.instances) platform.destroy(true);
                     this.instances.length = 0; // clear array for next time plugin is launched
+
+                    for(const timeout of timeouts) clearTimeout(timeout);
+                    for(const interval of intervals) clearInterval(interval);
+                    timeouts.length = 0; intervals.length = 0;
+
                 }
 
                 getSettingsPanel() {
@@ -3327,7 +4451,7 @@ module.exports = (() => {
 
                     this.patchRenderHeader = () => {
                         BdApi.Patcher.after(pluginName, activityRenderModule.exports.default.prototype, "renderHeader", (_this, args, ret) => {
-                            if(!_this.activity || !_this.activity.username) return ret;
+                            if(!ret || !_this.activity || !_this.activity.username) return ret;
 
                             if(!ret.props.children[1].props.children.props.children.startsWith("Playing as"))
                                 ret.props.children[1].props.children.props.children += " as " + _this.activity.username;

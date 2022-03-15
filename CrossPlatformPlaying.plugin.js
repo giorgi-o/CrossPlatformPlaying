@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.2.3
+ * @version 0.2.4
  * @authorId 316978243716775947
  */
 /*@cc_on
@@ -3581,7 +3581,7 @@ class EA extends Platform {
 
     deserializeData(data) {
         this.enabled = data.enabled || false;
-        this.remid = data.remid || "";
+        this.remid = (data.remid || "").trim();
         this.discordToEaIDs = data.usersMap || {};
         this.debug = data.debug || false;
     }
@@ -3595,57 +3595,61 @@ class EA extends Platform {
     }
 
     async authenticate(remid) {
-        // step 1
-        const req1 = await fetch("https://accounts.ea.com/connect/auth?" +
-            "client_id=JUNO_PC_CLIENT&" +
-            "response_type=code&" +
-            "nonce=1&" +
-            "pc_sign=eyJhdiI6InYxIiwiYnNuIjoiRzJDN002MyIsImdpZCI6Mzk4NzYsImhzbiI6IkFSUkFZMCIsIm1hYyI6IiQwMGZmOWJiNGMyYTAiLCJtaWQiOiI3NTc3MTg0MDY1MDM5NjIzNTkxIiwibXNuIjoiLkcyQzdNNjMuQ05DTUswMDA5NDAwMjYuIiwic3YiOiJ2MSIsInRzIjoiMjAyMi0yLTI3IDEzOjM1OjQyOjI0NiJ9.XPSVI2ksrbveN_FcG2ep_1QpqLphs-cWZRgcsSnIfsI&" +
-            "", {
-            headers: {
-                "Cookie": `remid=${remid}`,
-            }
-        });
-        this.log(req1);
-
-        if(!req1.headers['set-cookie']) {
-            BdApi.alert("Could not login to EA! Most likely your RemID is invalid.");
-            this.remid = "";
-            this.destroy();
-            return;
-        }
-
-        const remidHeader = req1.headers['set-cookie'][0];
-        remid = remidHeader.split('=')[1].split(';')[0];
-        this.log("New RemID: " + remid);
-        this.remid = remid;
-        this.saveData();
-
-        const redirectUrl = req1.headers.location;
-        const code = redirectUrl.match(/code=(.+)&?/)[1];
-        this.log("Auth Code: " + code);
-
-        // step 2
-        const req2 = await fetch("https://accounts.ea.com/connect/token", {
-            method: "POST",
-            headers: {
-                "content-type": "application/x-www-form-urlencoded"
-            },
-            body:
-                "grant_type=authorization_code" +
-                `&code=${code}&` +
+        try { // step 1
+            const req1 = await fetch("https://accounts.ea.com/connect/auth?" +
                 "client_id=JUNO_PC_CLIENT&" +
-                "client_secret=4mRLtYMb6vq9qglomWEaT4ChxsXWcyqbQpuBNfMPOYOiDmYYQmjuaBsF2Zp0RyVeWkfqhE9TuGgAw7te&" +
-                ""
-        });
-        this.log(req2);
+                "response_type=code&" +
+                "nonce=1&" +
+                "pc_sign=eyJhdiI6InYxIiwiYnNuIjoiRzJDN002MyIsImdpZCI6Mzk4NzYsImhzbiI6IkFSUkFZMCIsIm1hYyI6IiQwMGZmOWJiNGMyYTAiLCJtaWQiOiI3NTc3MTg0MDY1MDM5NjIzNTkxIiwibXNuIjoiLkcyQzdNNjMuQ05DTUswMDA5NDAwMjYuIiwic3YiOiJ2MSIsInRzIjoiMjAyMi0yLTI3IDEzOjM1OjQyOjI0NiJ9.XPSVI2ksrbveN_FcG2ep_1QpqLphs-cWZRgcsSnIfsI&" +
+                "", {
+                headers: {
+                    "Cookie": `remid=${remid}`,
+                }
+            });
+            this.log(req1);
 
-        const authResponse = JSON.parse(req2.body)
-        this.log(authResponse);
+            if(!req1.headers['set-cookie']) {
+                BdApi.alert("Could not login to EA! Most likely your RemID is invalid.");
+                this.remid = "";
+                this.destroy();
+                return;
+            }
 
-        authResponse.accessTokenExpires = Date.now() + authResponse.expires_in * 1000;
-        this.auth = authResponse;
-        return authResponse.access_token;
+            const remidHeader = req1.headers['set-cookie'][0];
+            remid = remidHeader.split('=')[1].split(';')[0];
+            this.log("New RemID: " + remid);
+            this.remid = remid;
+            this.saveData();
+
+            const redirectUrl = req1.headers.location;
+            const code = redirectUrl.match(/code=(.+)&?/)[1];
+            this.log("Auth Code: " + code);
+
+            // step 2
+            const req2 = await fetch("https://accounts.ea.com/connect/token", {
+                method: "POST",
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded"
+                },
+                body:
+                    "grant_type=authorization_code" +
+                    `&code=${code}&` +
+                    "client_id=JUNO_PC_CLIENT&" +
+                    "client_secret=4mRLtYMb6vq9qglomWEaT4ChxsXWcyqbQpuBNfMPOYOiDmYYQmjuaBsF2Zp0RyVeWkfqhE9TuGgAw7te&" +
+                    ""
+            });
+            this.log(req2);
+
+            const authResponse = JSON.parse(req2.body)
+            this.log(authResponse);
+
+            authResponse.accessTokenExpires = Date.now() + authResponse.expires_in * 1000;
+            this.auth = authResponse;
+            return authResponse.access_token;
+        } catch(e) {
+            console.error(remid);
+            err(e);
+        }
     }
 
     getRemIDFromEaApp() {
@@ -3661,8 +3665,7 @@ class EA extends Platform {
 
         for(const line of fileContents.split('\n')) {
             if(line.startsWith("remid=")) {
-                fs.unlinkSync(filepath);
-                return [true, line.substring(26)];
+                return [true, line.substring(26).trim()];
             }
         }
 
@@ -3803,62 +3806,15 @@ class EA extends Platform {
                         this.log("My id is " + this.ownId);
 
                         this.requestOwnPresence();
-                        this.requestFriendsList();
-                        this.requestOwnPresence();
                         this.requestFriendPresences();
                         break;
                     case 0x92:
                         // friends list
                         this.log("Got friends list!");
-
-                        const [packetType, packetTypeEnd] = this.readVarInt(buf, packetTypeIndex);
-                        const [restOfMessageLength, restOfMessageLengthEnd] = this.readVarInt(buf, packetTypeEnd);
-
-                        let currentFriendIndex = restOfMessageLengthEnd + 1;
-                        let nextFriendIndex;
-                        while(true) {
-                            const [friendPacketLength, friendPacketLengthEnd] = this.readVarInt(buf, currentFriendIndex);
-                            nextFriendIndex = friendPacketLengthEnd + friendPacketLength;
-
-                            const [friendshipString, friendshipStringEnd] = this.readString(buf, friendPacketLengthEnd + 1);
-
-                            this.requestFriendInfo(friendshipString);
-
-                            currentFriendIndex = nextFriendIndex + 1;
-                            if(nextFriendIndex >= buf.length) break;
-                        }
-
                         break;
                     case 0x62:
                         // friend name
                         this.log("Got friend name!");
-
-                        const [restOfPacketLength, restOfPacketLengthEnd] = this.readVarInt(buf, packetTypeIndex + 1);
-
-                        const [friendshipString, friendshipStringEnd] = this.readString(buf, restOfPacketLengthEnd + 1);
-
-                        // ea sends name for both users in the relationship
-                        const [user1PartLength, user1PartLengthEnd] = this.readVarInt(buf, friendshipStringEnd + 1);
-                        const [user1Id, user1IdEnd] = this.readString(buf, user1PartLengthEnd + 1);
-                        const [user1DisplayName, user1DisplayNameEnd] = this.readString(buf, user1IdEnd + 1);
-
-                        if(buf[user1PartLengthEnd + user1PartLength] === 0x18) {
-                            // idk what ghost friends are. They don't show up on Origin, and show up as a glitched
-                            // empty name on EA Desktop. Maybe someone who deleted their account?
-                            return this.log("It's a ghost friend!");
-                        }
-
-                        const [user2PartLength, user2PartLengthEnd] = this.readVarInt(buf, user1PartLengthEnd + user1PartLength + 1);
-                        const [user2Id, user2IdEnd] = this.readString(buf, user2PartLengthEnd + 1);
-                        const [user2DisplayName, user2DisplayNameEnd] = this.readString(buf, user2IdEnd + 1);
-
-                        this.friendIdToDisplayName[user1Id] = user1DisplayName;
-                        this.friendIdToDisplayName[user2Id] = user2DisplayName;
-
-                        if(user1Id === this.ownId) this.log(`${user2Id}'s name is ${user2DisplayName}`);
-                        else if(user2Id === this.ownId) this.log(`${user1Id}'s name is ${user1DisplayName}`);
-                        else console.error("[EA] Friendship has two IDs and none match own id! " + friendshipString);
-
                         break;
                 }
             } else if(buf[bufferLengthEnd] === 0x3A) {
@@ -3887,7 +3843,7 @@ class EA extends Platform {
                         break;
                     case 0x28:
                         // no presence for user
-                        this.log("Received no presence for user " + userId);
+                        this.log(`User ${userId} is offline`);
 
                         delete this.presenceCache[userId];
                         break;
@@ -3965,17 +3921,6 @@ class EA extends Platform {
         } catch(e) {
             err(e);
         }
-    }
-
-    requestFriendsList() {
-        const body = Buffer.from([0xD2, 0x02, 0x08, 0x08, 0x01, 0x10, 0x01, 0x18, 0x01, 0x20, 0x01]);
-        this.formatAndSendBuffer(body);
-    }
-
-    requestFriendInfo(friendshipString) {
-        const bodyHeader = Buffer.from([0x5A, 0x2B, 0x0A]);
-        const friendshipStringBuffer = this.encodeString(friendshipString);
-        this.formatAndSendBuffer(Buffer.concat([bodyHeader, friendshipStringBuffer]));
     }
 
     requestOwnPresence() {
@@ -4121,7 +4066,7 @@ class EA extends Platform {
 
             const [success, remid] = this.getRemIDFromEaApp();
             if(success) {
-                this.cookies = remid;
+                this.remid = remid;
                 remidTextbox.children[0].children[1].children[0].value = remid;
                 button.innerHTML = "Success!";
                 this.saveData();
@@ -4182,7 +4127,7 @@ module.exports = (() => {
                 "discord_id": "316978243716775947",
                 "github_username": "giorgi-o"
             }],
-            "version": "0.2.3",
+            "version": "0.2.4",
             "description": "Show what people are playing on other platforms such as Steam and Valorant",
             "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
             "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
@@ -4232,31 +4177,10 @@ module.exports = (() => {
                     const changelog = [
                         {
                             title: "EA",
-                            type: "added",
-                            items: [
-                                "Added EA support! This took me a while because there is absolutely no documentation online whatsoever, but it's finally done.",
-                                "I've only tested it with Apex and FIFA, and I haven't tested it much, so let me know if there is anything I overlooked.",
-                                "Just like the other platforms, I'll do a write-up on the GitHub wiki on how it works and what I've found."
-                            ]
-                        },
-                        {
-                            title: "Minecraft",
                             type: "improved",
                             items: [
-                                "Added Minecraft private server support as well!",
-                                "By default, Minecraft servers send basic data to anyone that asks, such as how many players are online, as well as which ones, but only up to 8-12 players.",
-                                "This is mainly geared towards small private servers, as most public servers disable the sample player list anyways."
-                            ]
-                        },
-                        {
-                            title: "Is anyone even reading this?",
-                            type: "progress",
-                            items: [
-                                "Hey guys! So it's been a while, huh.",
-                                "I don't even know why I spent so long banging my head to get EA working. It involved staring at binary data for many hours on end, and that's once I figured out how to intercept the data in the first place. Funny thing is, I don't even play any games on EA, I just thought it would be easy, and then refused to give up once it got hard.",
-                                "Anyways, if you're using this plugin, don't hesitate to shoot me a DM! Other than the few GitHub stars, for all I know I could be the only one using my plugin haha :)",
-                                "I'm actually wondering what I should do next! I'm thinking of implementing proper Steam support, as it seems to be well documented ever since Valve open-sourced Steamworks a few years ago, but if you have any ideas, please tell me! Bonus points if it's already somewhat documented.",
-                                "Regardless, I really enjoy developing this plugin, and I hope you enjoy using it as well. See you probably in 2 months!"
+                                "Fixed a bug in EA where the 'Fetch RemID' button wasn't working",
+                                "Also got rid of some unnecessary code"
                             ]
                         }
                     ];

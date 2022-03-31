@@ -1,31 +1,34 @@
 /**
  * @name CrossPlatformPlaying
  * @author Giorgio
- * @description Show what people are playing on other platforms such as Steam and Valorant
- * @version 0.2.4
+ * @description Show what friends are playing even if they have their game activity turned off
+ * @version 0.2.5
  * @authorId 316978243716775947
+ * @source https://github.com/giorgi-o/CrossPlatformPlaying
  */
+
 /*@cc_on
 @if (@_jscript)
 
-    // Offer to self-install for clueless users that try to run this directly.
-    var shell = WScript.CreateObject("WScript.Shell");
-    var fs = new ActiveXObject("Scripting.FileSystemObject");
-    var pathPlugins = shell.ExpandEnvironmentStrings("%APPDATA%\BetterDiscord\plugins");
-    var pathSelf = WScript.ScriptFullName;
-    // Put the user at ease by addressing them in the first person
-    shell.Popup("It looks like you've mistakenly tried to run me directly. \n(Don't do that!)", 0, "I'm a plugin for BetterDiscord", 0x30);
-    if (fs.GetParentFolderName(pathSelf) === fs.GetAbsolutePathName(pathPlugins)) {
-        shell.Popup("I'm in the correct folder already.", 0, "I'm already installed", 0x40);
-    } else if (!fs.FolderExists(pathPlugins)) {
-        shell.Popup("I can't find the BetterDiscord plugins folder.\nAre you sure it's even installed?", 0, "Can't install myself", 0x10);
-    } else if (shell.Popup("Should I copy myself to BetterDiscord's plugins folder for you?", 0, "Do you need some help?", 0x34) === 6) {
-        fs.CopyFile(pathSelf, fs.BuildPath(pathPlugins, fs.GetFileName(pathSelf)), true);
-        // Show the user where to put plugins in the future
-        shell.Exec("explorer " + pathPlugins);
-        shell.Popup("I'm installed!", 0, "Successfully installed", 0x40);
-    }
-    WScript.Quit();
+	// Offer to self-install for clueless users that try to run this directly.
+	var shell = WScript.CreateObject("WScript.Shell");
+	var fs = new ActiveXObject("Scripting.FileSystemObject");
+	var pathPlugins = shell.ExpandEnvironmentStrings("%APPDATA%\BetterDiscord\plugins");
+	var pathSelf = WScript.ScriptFullName;
+	// Put the user at ease by addressing them in the first person
+	shell.Popup("It looks like you've mistakenly tried to run me directly. \n(Don't do that!)", 0, "I'm a plugin for BetterDiscord", 0x30);
+	if (fs.GetParentFolderName(pathSelf) === fs.GetAbsolutePathName(pathPlugins)) {
+		shell.Popup("I'm in the correct folder already.", 0, "I'm already installed", 0x40);
+	} else if (!fs.FolderExists(pathPlugins)) {
+		shell.Popup("I can't find the BetterDiscord plugins folder.\nAre you sure it's even installed?", 0, "Can't install myself", 0x10);
+	} else if (shell.Popup("Should I copy myself to BetterDiscord's plugins folder for you?", 0, "Do you need some help?", 0x34) === 6) {
+		fs.CopyFile(pathSelf, fs.BuildPath(pathPlugins, fs.GetFileName(pathSelf)), true);
+		// Show the user where to put plugins in the future
+		shell.Exec("explorer " + pathPlugins);
+		shell.Popup("I'm installed!", 0, "Successfully installed", 0x40);
+	}
+	WScript.Quit();
+
 @else@*/
 
 
@@ -75,8 +78,45 @@ const err = e => {
 const pluginName = "CrossPlatformPlaying";
 const customRpcAppId = "883483733875892264";
 
+const config = {
+    "info": {
+        "name": pluginName,
+        "authors": [{
+            "name": "Giorgio",
+            "discord_id": "316978243716775947",
+            "github_username": "giorgi-o"
+        }],
+        "version": "0.2.5",
+        "description": "Lets you see what your friends are playing even if they turned off game activity",
+        "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
+        "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
+    },
+    "changelog": [{ // added: green, improved: blurple, fixed: red, progress: yellow
+        "title": "New Stuff",
+        "type": "added",
+        "items": [
+            "This update focuses more on the Discord side of things.",
+            "Activities now properly update in the guild member list! (finally)",
+            "The settings panel looks 1% better now",
+            "Shout-out to Discord for changing the guild activity display code while I was working on it lol"
+        ]
+    }, {
+        "title": "Auto-Updating",
+        "type": "fixed",
+        "items": ["So turns out auto-updating broke a while ago, whoops. Should be working now."]
+    }, {
+        "title": "Improvements",
+        "type": "improved",
+        "items": ["All round bug fixes and improvements, you know the drill :)"]
+    }]
+};
+
 // the discord id of the current user (once the plugin loads)
 let discord_id = 0;
+
+// update the user's status in the guild member list
+// call this when the user changes game (not just the game state)
+let updateUser = (id) => {};
 
 
 // to implement a new platform, create a subclass of Platform
@@ -119,7 +159,23 @@ class Platform {
                 presences.push(presenceCache[platform_id]);
         }
         if(presences) return presences;
-    };
+    }
+
+    // helper method to call updateUser() on a user using their user id
+    // because typically the processPresence() functions only have the platform id, not discord id
+    updateUser(platformId, discordToPlatformId) {
+        const discordIds = [];
+        for(const [discordId, platformIds] of Object.entries(discordToPlatformId)) {
+            let matches;
+            if(Array.isArray(platformIds)) matches = platformIds.includes(platformId);
+            else matches = platformIds === platformId;
+
+            if(matches) discordIds.push(discordId);
+        }
+
+        for(const discordId of discordIds)
+            updateUser(discordId);
+    }
 
     // called when the plugin is stopped or the platform is disabled
     // pluginShutdown is true if the whole plugin is being disabled
@@ -830,13 +886,15 @@ class Steam extends Platform {
         // format: https://developer.valvesoftware.com/wiki/Steam_Web_API#GetPlayerSummaries_.28v0002.29
         if(summary.gameextrainfo) {
             const statuses = ["Offline", "Playing", "Busy", "Away", "Snoozed", "Looking to trade", "Looking to play"];
-            const previousPresence = this.presenceCache[summary.steamid]
+            const previousPresence = this.presenceCache[summary.steamid];
+            const playingSameGame = previousPresence && summary.gameextrainfo === previousPresence.name;
+
             const presence = {
                 application_id: customRpcAppId,
                 name: summary.gameextrainfo,
                 details: `${statuses[summary.personastate]} on Steam`,
                 type: 0,
-                timestamps: {start: previousPresence ? previousPresence.timestamps.start : +new Date()},
+                timestamps: {start: playingSameGame ? previousPresence.timestamps.start : +new Date()},
                 assets: {
                     large_image: "883490890377756682",
                     large_text: "Playing as " + summary.personaname
@@ -844,10 +902,20 @@ class Steam extends Platform {
                 username: summary.personaname,
                 priority: -1
             };
+
             this.presenceCache[summary.steamid] = presence;
             this.log(presence);
+
+            if(!playingSameGame) this.updateUser(summary.steamid, this.discordToSteamIDs);
         } else {
-            delete this.presenceCache[summary.steamid];
+            this.deletePresence(summary.steamid);
+        }
+    }
+
+    deletePresence(id) {
+        if(this.presenceCache[id]) {
+            delete this.presenceCache[id];
+            this.updateUser(id, this.discordToSteamIDs);
         }
     }
 
@@ -886,7 +954,7 @@ class Steam extends Platform {
         }, 50);
 
         const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToSteamIDs,
-            "To get IDs, use a site such as <a href='https://www.steamidfinder.com/' target=\"_blank\">Steam ID Finder</a>.", "Steam ID", /^\d+$/);
+            "To get IDs, use a site such as <a href='https://www.steamidfinder.com/' target=\"_blank\">Steam ID Finder</a> and copy the SteamID64 (Dec).", "Steam ID", /^\d+$/);
 
         const debugSwitch = SettingsBuilder.debugSwitch(this);
 
@@ -895,7 +963,7 @@ class Steam extends Platform {
 
     destroy(pluginShutdown) {
         this.enabled = false;
-        this.presenceCache = {};
+        for(const id in this.presenceCache) this.deletePresence(id);
         clearInterval(this.cacheUpdateinterval);
         if(!pluginShutdown) this.saveData();
     }
@@ -914,9 +982,10 @@ class Minecraft extends Platform {
         this.loadData();
         this.UUIDs = [...new Set(Object.values(this.discordToMinecraftUUIDs).flat())] // remove duplicates
 
-        const log = this.log.bind(this);
-        this.hypixel = new Hypixel(this.UUIDs, this.hypixelApiKey, log);
-        this.private = new MCPrivate(this.UUIDs, this.servers, log);
+        this.log = this.log.bind(this);
+        this.updateUser = uuid => super.updateUser(uuid, this.discordToMinecraftUUIDs);
+        this.hypixel = new Hypixel(this.UUIDs, this.hypixelApiKey, this);
+        this.private = new MCPrivate(this.UUIDs, this.servers, this);
 
         if(this.enabled) {
             this.start();
@@ -951,7 +1020,7 @@ class Minecraft extends Platform {
         return {
             enabled: this.enabled || false,
             hypixelApiKey: this.hypixelApiKey || "",
-            usersMap: this.discordToMinecraftUUIDs || {},
+            usersMap: this.removeDashesFromUUIDs(this.discordToMinecraftUUIDs || {}),
             servers: this.servers || [],
             debug: this.debug || false
         }
@@ -963,6 +1032,15 @@ class Minecraft extends Platform {
         this.discordToMinecraftUUIDs = data.usersMap || {};
         this.servers = data.servers || [];
         this.debug = data.debug || false;
+    }
+
+    removeDashesFromUUIDs(discordToMinecraftUUIDs) {
+        for(const UUIDs of Object.values(discordToMinecraftUUIDs)) {
+            for(const [index, UUID] of Object.entries(UUIDs)) {
+                UUIDs[index] = UUID.replaceAll(/-/g, "");
+            }
+        }
+        return discordToMinecraftUUIDs;
     }
 
     getPresence(discord_id) {
@@ -1013,9 +1091,9 @@ class Minecraft extends Platform {
         }
         const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("Hypixel API Key", "Your Hypixel API key. Use the /api command in-game to get it.", this.hypixelApiKey, textboxChange);
 
-        // uuid regex adapted from https://stackoverflow.com/a/14166194/6087491
+        // uuid regex from https://github.com/bribes/Minecraft-UUID-RegEx
         const userMapDiv = SettingsBuilder.userMapInterface(this, null, discordUsersDatalist, null, discordUserList, this.discordToMinecraftUUIDs,
-            "To get UUIDs, use <a href='https://namemc.com' target=\"_blank\">NameMC</a>.", "Minecraft UUID", /^[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89aAbB][a-f0-9]{3}-?[a-f0-9]{12}$/);
+            "To get UUIDs, use <a href='https://namemc.com' target=\"_blank\">NameMC</a>.", "Minecraft UUID", /^([0-9a-f]{8})(?:-|)([0-9a-f]{4})(?:-|)(4[0-9a-f]{3})(?:-|)([89ab][0-9a-f]{3})(?:-|)([0-9a-f]{12})$/);
         // todo make them username instead of UUID
         // todo make it work when adding/removing users (changing hypixel timeout, etc.)
 
@@ -1035,10 +1113,11 @@ class Minecraft extends Platform {
 
 class Hypixel {
 
-    constructor(UUIDs, apiKey, log) {
+    constructor(UUIDs, apiKey, mc) {
         this.UUIDs = UUIDs;
         this.apiKey = apiKey;
-        this.log = log;
+        this.log = mc.log;
+        this.updateUser = mc.updateUser;
 
         this.timeouts = [];
         this.presenceCache = {};
@@ -1061,7 +1140,7 @@ class Hypixel {
     }
 
     destroy() {
-        this.presenceCache = {};
+        for(const uuid in this.presenceCache) this.deletePresence(uuid);
         clearInterval(this.cacheInterval);
         for(const timeout of this.timeouts)
             clearTimeout(timeout);
@@ -1126,9 +1205,8 @@ class Hypixel {
                 if(this.apiKey) BdApi.alert("Your Hypixel API key is invalid! The Hypixel plugin has been disabled, reenable it in settings.");
                 else BdApi.alert("You haven't provided a Hypixel API key!");
                 this.destroy();
-                return;
             }
-            console.error("HTTP error " + req.statusCode + " when fetching hypixel player status data");
+            else console.error("HTTP error " + req.statusCode + " when fetching hypixel player status data");
             return;
         }
 
@@ -1138,15 +1216,15 @@ class Hypixel {
                 this.log(json_data);
                 this.getPlayerInfo(uuid, json_data.session);
             } else {
-                delete this.presenceCache[uuid];
+                this.deletePresence(uuid);
                 if(!json_data.success) {
                     console.error(json_data);
                     err("Could not fetch player status for player with UUID " + uuid + "!");
                 }
             }
         } catch (e) {
+            console.error(req);
             console.error(e);
-            console.error(data);
             err("Couldn't JSON Parse Hypixel status response!");
         }
     }
@@ -1207,12 +1285,22 @@ class Hypixel {
                 presence.assets.small_text = session.map;
             }
 
+            const previousPresence = this.presenceCache[uuid];
+            if(!previousPresence) this.updateUser(uuid);
+
             this.presenceCache[uuid] = presence;
             this.log(presence);
         } catch(e) {
             console.error(e);
             console.error(player, session);
             err("Error while processing Hypixel data!");
+        }
+    }
+
+    deletePresence(uuid) {
+        if(this.presenceCache[uuid]) {
+            delete this.presenceCache[uuid];
+            this.updateUser(uuid);
         }
     }
 
@@ -1236,10 +1324,11 @@ class Hypixel {
 
 class MCPrivate {
 
-    constructor(UUIDs, servers, log) {
+    constructor(UUIDs, servers, mc) {
         this.UUIDs = UUIDs;
         this.servers = servers;
-        this.log = log;
+        this.log = mc.log;
+        this.updateUser = mc.updateUser;
 
         this.presenceCache = {};
         this.pingTimeouts = [];
@@ -1403,6 +1492,7 @@ class MCPrivate {
             };
 
             if(previousPresence) presence.timestamps.start = previousPresence.timestamps.start;
+            else this.updateUser(uuid);
 
             this.presenceCache[uuid][url] = presence;
             this.log(presence);
@@ -1410,8 +1500,17 @@ class MCPrivate {
 
         // clear players not on server anymore
         const UUIDs = players.map(player => player.id.replaceAll('-', ""));
-        for(const UUID in this.presenceCache) {
-            if(!UUIDs.includes(UUID)) delete this.presenceCache[UUID][url];
+        for(const uuid in this.presenceCache) {
+            if(!UUIDs.includes(uuid)) {
+                this.deletePresence(uuid);
+            }
+        }
+    }
+
+    deletePresence(uuid) {
+        if(this.presenceCache[uuid]) {
+            delete this.presenceCache[uuid];
+            this.updateUser(uuid);
         }
     }
 
@@ -1426,6 +1525,7 @@ class MCPrivate {
 
     destroy() {
         clearInterval(this.interval);
+        for(const uuid in this.presenceCache) this.deletePresence(uuid);
     }
 }
 
@@ -1475,7 +1575,7 @@ class Twitch extends Platform {
 
     destroy(pluginShutdown) {
         this.enabled = false;
-        this.presenceCache = {};
+        for(const id in this.presenceCache) this.deletePresence(id);
         clearInterval(this.interval);
         if(!pluginShutdown) this.saveData();
     }
@@ -1513,6 +1613,7 @@ class Twitch extends Platform {
 
             const streamerList = this.extractStreamerList(json_data[0].data.currentUser.friends.edges);
             const streamsMetadata = await this.fetchStreamsMetadata(streamerList);
+            if(!streamerList || !streamsMetadata) return;
 
             this.usersList = {
                 idToName: {},
@@ -1545,9 +1646,14 @@ class Twitch extends Platform {
         const requestBody = [];
         for(const streamerLogin of streamerLogins) {
             requestBody.push({
-                "operationName":"StreamMetadata",
+                "operationName": "StreamMetadata",
                 "variables": {"channelLogin": streamerLogin},
-                "extensions":{"persistedQuery":{"version":1,"sha256Hash":"059c4653b788f5bdb2f5a2d2a24b0ddc3831a15079001a3d927556a96fb0517f"}}
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "059c4653b788f5bdb2f5a2d2a24b0ddc3831a15079001a3d927556a96fb0517f"
+                    }
+                }
             });
         }
 
@@ -1561,18 +1667,25 @@ class Twitch extends Platform {
         });
         const body = JSON.parse(data.body);
 
-        const streamsMetadata = {};
-        for(let i = 0; i < body.length; i++) {
-            const stream = body[i].data.user;
-            streamsMetadata[streamerLogins[i]] = {
-                title: stream.lastBroadcast.title,
-                viewers: stream.stream.viewersCount,
-                start: + new Date(stream.stream.createdAt),
-                profilePicture: stream.profileImageURL//.replace("70x70", "300x300") // 600x600 also works
+        try {
+            const streamsMetadata = {};
+            for(let i = 0; i < body.length; i++) {
+                const stream = body[i].data.user;
+                streamsMetadata[streamerLogins[i]] = {
+                    title: stream.lastBroadcast.title,
+                    viewers: stream.stream.viewersCount,
+                    start: +new Date(stream.stream.createdAt),
+                    profilePicture: stream.profileImageURL//.replace("70x70", "300x300") // 600x600 also works
+                }
             }
-        }
 
-        return streamsMetadata;
+            return streamsMetadata;
+        } catch(e) {
+            console.error(e);
+            console.error(data);
+            console.error(body);
+            err("Error while trying to fetch twitch metadata!");
+        }
     }
 
     processFriend(friend, streamsMetadata) {
@@ -1634,13 +1747,22 @@ class Twitch extends Platform {
                 }
 
                 this.log(this.presenceCache[friend.id]());
+
+                if(!previousPresence) this.updateUser(friend.id, this.discordToTwitchID);
             } else {
-                delete this.presenceCache[friend.id];
+                this.deletePresence(friend.id);
             }
         } catch(e) {
             console.error(friend, streamsMetadata);
             console.error(e);
             err("Error while processing Twitch friend data! " + e);
+        }
+    }
+
+    deletePresence(id) {
+        if(this.presenceCache[id]) {
+            delete this.presenceCache[id];
+            this.updateUser(id, this.discordToTwitchID);
         }
     }
 
@@ -1673,7 +1795,10 @@ class Twitch extends Platform {
                 SettingsBuilder.toggleEnabledSwitch(enabledSwitch);
             }
         }
-        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("OAuth Key", "Your Twitch OAuth key. I should write a guide on how to get this at some point", this.oauthKey, textboxChange);
+        const apiKeyTextbox = new ZeresPluginLibrary.Settings.Textbox("OAuth Key", "How to get your Twitch OAuth key", this.oauthKey, textboxChange);
+        setTimeout(() => {
+            apiKeyTextbox.getElement().children[0].children[2].innerHTML = `<a href="https://github.com/giorgi-o/CrossPlatformPlaying/issues/4#issuecomment-1069634982" target="_blank">How to get your Twitch OAuth key</a>`
+        }, 50);
 
         const datalist = SettingsBuilder.createDatalist("twitch", Object.keys(this.usersList.nameToId));
         const userMapDiv = SettingsBuilder.userMapInterface(this, datalist, discordUsersDatalist, this.usersList, discordUserList, this.discordToTwitchID, null, "Twitch username", /^\d+$/);
@@ -1697,10 +1822,11 @@ class Riot extends Platform {
         this.riotPUUIDToSummonerName = {};
 
         const log = this.log.bind(this);
+        const updateUser = puuid => super.updateUser(puuid, this.discordToRiotPUUIDs);
 
-        this.valorant = new Valorant(this.riotPUUIDToUsername, log);
-        this.lol = new Lol(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName, log);
-        this.wildRift = new WildRift(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName, log);
+        this.valorant = new Valorant(this.riotPUUIDToUsername, log, updateUser);
+        this.lol = new Lol(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName, log, updateUser);
+        this.wildRift = new WildRift(this.riotPUUIDToUsername, this.riotPUUIDToSummonerName, log, updateUser);
 
         this.loadData();
         if (this.enabled) {
@@ -1755,18 +1881,27 @@ class Riot extends Platform {
 
     destroy(pluginShutdown) {
         this.enabled = false;
-        this.presenceCache = {};
         clearInterval(this.reconnectInterval);
         clearTimeout(this.heartbeat);
         if(this.socket) {
             this.socket.write("</stream:stream>");
             this.socket.destroy();
         }
+
+        this.valorant.deleteAllPresences();
+        this.lol.deleteAllPresences();
+        this.wildRift.deleteAllPresences();
+
         if(!pluginShutdown) this.saveData();
     }
 
     async refreshToken(cookies) {
-        const res = await fetch("https://auth.riotgames.com/authorize?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in&client_id=play-valorant-web-prod&response_type=token%20id_token&scope=account%20ban%20link%20lol%20offline_access%20openid&nonce=123", {
+        const res = await fetch("https://auth.riotgames.com/authorize?" +
+            "redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in&" +
+            "client_id=play-valorant-web-prod&" +
+            "response_type=token%20id_token&" +
+            "scope=account%20ban%20link%20lol%20offline_access%20openid&" +
+            "nonce=123", {
             method: "GET",
             headers: {
                 // "cloudflare bitches at us without a user-agent" - molenzwiebel
@@ -2126,7 +2261,6 @@ class Riot extends Platform {
 
                 this.riotPUUIDToSummonerName[puuid] = lolName;
             }
-
         }
         this.log(this.riotPUUIDToUsername);
         this.log(this.riotPUUIDToSummonerName);
@@ -2135,7 +2269,6 @@ class Riot extends Platform {
     getSettings(discordUserList, discordUsersDatalist) {
         // enabled switch
         const enabledSwitch = SettingsBuilder.enabledSwitch(this);
-
 
         // cookies textbox
         const textboxChange = (value) => {
@@ -2184,9 +2317,10 @@ class Riot extends Platform {
 const valRpcAppID = "811469787657928704"; // https://github.com/colinhartigan/valorant-rpc
 
 class Valorant {
-    constructor(riotPUUIDToUsername, log) {
+    constructor(riotPUUIDToUsername, log, updateUser) {
         this.riotPUUIDToUsername = riotPUUIDToUsername;
         this.log = log;
+        this.updateUser = updateUser;
 
         // constants
         // todo get these from valorant-api
@@ -2254,7 +2388,9 @@ class Valorant {
                     err("Could not JSON parse Valorant presence data! " + e);
                 }
             } else {
+                const previousPresence = this.presenceCache[puuid];
                 delete this.presenceCache[puuid];
+                if(previousPresence) this.updateUser(puuid);
             }
         } catch (e) {
             console.error(data);
@@ -2450,6 +2586,10 @@ class Valorant {
 
             this.presenceCache[puuid] = presence;
             this.log(presence);
+
+            if(!previousPresence || presence.priority !== previousPresence.priority) {
+                this.updateUser(puuid);
+            }
         } catch (e) {
             console.error(puuid, presenceData, timestamp);
             err(e);
@@ -2458,6 +2598,15 @@ class Valorant {
 
     getPresence(puuid) {
         return this.presenceCache[puuid];
+    }
+
+    deleteAllPresences() {
+        for(const puuid in this.presenceCache) {
+            if(this.presenceCache[puuid]) {
+                delete this.presenceCache[puuid];
+                this.updateUser(puuid);
+            }
+        }
     }
 }
 
@@ -2471,7 +2620,7 @@ const lolShowSkinName = true;
 const lolRpcAppId = "899030985855860756";
 
 class Lol {
-    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName, log) {
+    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName, log, updateUser) {
         this.riotPUUIDToUsername = riotPUUIDToUsername;
         this.riotPUUIDToSummonerName = riotPUUIDToSummonerName;
 
@@ -2501,8 +2650,8 @@ class Lol {
 
         this.presenceCache = {};
         this.log = log;
+        this.updateUser = updateUser;
     }
-
 
     processXMLData(data) {
         try {
@@ -2526,7 +2675,9 @@ class Lol {
                     }
                 }
             } else {
+                const previousPresence = this.presenceCache[puuid];
                 delete this.presenceCache[puuid];
+                if(previousPresence) this.updateUser(puuid);
             }
         } catch (e) {
             console.error(data);
@@ -2642,20 +2793,12 @@ class Lol {
             } else if(data.gameId) {
                 presenceBoilerplate.party = {
                     id: data.gameId,
-                    //size: [1, 5]
                 }
             }
-
-            // type 5 is "Competing in"
-            // it would be suitable for clashes but it hides the time elapsed/remaining so it's not worth it
-            /*if(data.queueId === "700") {
-                presenceBoilerplate.type = 5;
-            }*/
 
             if (data.gameStatus !== "inGame" && ["SCOUTING", "LOCKED_IN"].includes(data.clashTournamentState)) {
                 presence = {
                     ...presenceBoilerplate,
-                    //type: 5,
                     details: "Clash",
                     state: data.clashTournamentState === "SCOUTING" ? "Scouting" : "Locked In"
                 }
@@ -2712,10 +2855,19 @@ class Lol {
                         large_text: champion ? await inGameGetLargeText() : presenceBoilerplate.assets.large_text
                     }
                 }
+            } else {
+                console.error(data);
+                console.error("Unknown LoL gameStatus! " + data.gameStatus);
             }
+
+
             if (presence) {
                 this.presenceCache[puuid] = presence;
                 this.log(presence);
+
+                if(!previousPresence || presence.priority !== previousPresence.priority) {
+                    this.updateUser(puuid);
+                }
             }
         } catch (e) {
             console.error(puuid, data, timestamp)
@@ -2726,6 +2878,15 @@ class Lol {
     getPresence(puuid) {
         return this.presenceCache[puuid];
     }
+
+    deleteAllPresences() {
+        for(const puuid in this.presenceCache) {
+            if(this.presenceCache[puuid]) {
+                delete this.presenceCache[puuid];
+                this.updateUser(puuid);
+            }
+        }
+    }
 }
 
 
@@ -2734,11 +2895,12 @@ class Lol {
  *****************/
 
 class WildRift {
-    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName, log) {
+    constructor(riotPUUIDToUsername, riotPUUIDToSummonerName, log, updateUser) {
         this.riotPUUIDToUsername = riotPUUIDToUsername;
         this.riotPUUIDToSummonerName = riotPUUIDToSummonerName;
         this.presenceCache = {};
         this.log = log;
+        this.updateUser = updateUser;
     }
 
     processXMLData(data) {
@@ -2758,7 +2920,9 @@ class WildRift {
                     err("Could not parse Wild Rift presence data!" + e);
                 }
             } else {
+                const previousPresence = this.presenceCache[puuid];
                 delete this.presenceCache[puuid];
+                if(previousPresence) this.updateUser(puuid);
             }
         } catch (e) {
             console.error(data);
@@ -2784,12 +2948,27 @@ class WildRift {
             priority: 2
         };
 
+        const previousPresence = this.presenceCache[puuid];
+
         this.presenceCache[puuid] = presence;
         this.log(presence);
+
+        if(!previousPresence) {
+            this.updateUser(puuid);
+        }
     }
 
     getPresence(puuid) {
         return this.presenceCache[puuid];
+    }
+
+    deleteAllPresences() {
+        for(const puuid in this.presenceCache) {
+            if(this.presenceCache[puuid]) {
+                delete this.presenceCache[puuid];
+                this.updateUser(puuid);
+            }
+        }
     }
 }
 
@@ -2851,7 +3030,7 @@ class Epic extends Platform {
 
     destroy(pluginShutdown) {
         this.enabled = false;
-        this.presenceCache = {};
+        for(const id in this.presenceCache) this.deletePresence(id);
         clearTimeout(this.refreshTimeout);
         clearInterval(this.reconnectInterval);
         clearTimeout(this.heartbeat);
@@ -2910,6 +3089,10 @@ class Epic extends Platform {
 
     getID(token) {
         return this.decodeJWT(token).sub;
+    }
+
+    getDisplayName(token) {
+        return this.decodeJWT(token).dn;
     }
 
     getTokenExpiry(token) {
@@ -3043,6 +3226,8 @@ class Epic extends Platform {
     }
 
     async fetchFriendsList() {
+        this.epicIdToDisplayName[this.getID(this.authData.token)] = this.getDisplayName(this.authData.token);
+
         // get friends list
         const req = await fetch(`https://friends-public-service-prod.ol.epicgames.com/friends/api/v1/${this.getID(this.authData.token)}/summary?displayNames=true`, {
             headers: {
@@ -3239,6 +3424,13 @@ class Epic extends Platform {
         this.renderPresence(id, presenceSource, status, presenceType, show, timestamp);
     }
 
+    deletePresence(id) {
+        if(this.presenceCache[id]) {
+            delete this.presenceCache[id];
+            this.updateUser(id, this.discordToEpicID);
+        }
+    }
+
     async renderPresence(id, presenceSource, status, presenceType, show, timestamp) {
         const epicLogoID = "896045315323486238";
         const rlLogoID = "897981076146896937";
@@ -3289,10 +3481,10 @@ class Epic extends Platform {
                         }
                     }
                 }
-                else return delete this.presenceCache[id];
+                else return this.deletePresence(id);
                 break;
             case "fghi4567OXA1CdeeCuAmUWMhmfiO3EAl": // rocket league
-                if(presenceType === "unavailable") return delete this.presenceCache[id];
+                if(presenceType === "unavailable") return this.deletePresence(id);
 
                 const currentStatus = this.statusCache[id];
 
@@ -3401,7 +3593,7 @@ class Epic extends Platform {
 
                 break;
             default: // misc
-                if(presenceType === "unavailable") return delete this.presenceCache[id];
+                if(presenceType === "unavailable") return this.deletePresence(id);
 
                 let name;
                 switch(presenceSource) {
@@ -3411,6 +3603,9 @@ class Epic extends Platform {
                     case "fcb692f0fdf14526b1ffbb77cf1ef288":
                         name = "Paladins";
                         break;
+                    case "f71b1231985f48d1af3de723e0a6acdd":
+                        name = "Smite";
+                        break;
                     case "fghi4567gDK32qevrArU3uezn7r9kY8Y":
                         name = "Rocket League Sideswipe";
                         break;
@@ -3418,8 +3613,8 @@ class Epic extends Platform {
                         name = "Grand Theft Auto V";
                         break;
                     default:
-                        console.error("Unknown game ID! " + presenceSource);
-                        if(this.debug) BdApi.alert("Unknown game ID! " + presenceSource);
+                        if(this.debug) err("Unknown game ID! " + presenceSource);
+                        else console.error("Unknown game ID! " + presenceSource);
                         return;
                 }
 
@@ -3438,6 +3633,10 @@ class Epic extends Platform {
 
         this.presenceCache[id] = presence;
         this.log(presence);
+
+        if(!previousPresence || presence.name !== previousPresence.name) {
+            this.updateUser(id, this.discordToEpicID);
+        }
     }
 
     async getAppName(appID) {
@@ -3566,7 +3765,7 @@ class EA extends Platform {
         if(!this.remid) return this.destroy();
         this.fetchApexAssets();
         const accessToken = await this.authenticate(this.remid);
-        await this.getFriendsList();
+        await Promise.all([this.getOwnUsername(), this.getFriendsList()]);
         if(accessToken) await this.connectWebsocket(accessToken);
     }
 
@@ -3672,13 +3871,52 @@ class EA extends Platform {
         return [false, "Could not parse file! Is it corrupt?"];
     }
 
+    async getOwnUsername() {
+        this.log("Fetching own username...");
+
+        const req = await fetch("https://service-aggregation-layer.juno.ea.com/graphql?" +
+            "operationName=GetPersonas&" +
+            `variables=${encodeURIComponent(JSON.stringify({overrideCountryCode: ""}))}&` +
+            `extensions=${encodeURIComponent(JSON.stringify({persistedQuery: {version: 1, sha256Hash: "b81297d11a35ee6e21f5c5582452121dccf7ef54fd60e66218ee7dd199fb310d"}}))}`, {
+            headers: {
+                "Authorization": `Bearer ${this.auth.access_token}`,
+            }
+        });
+        const json = JSON.parse(req.body);
+        this.log(json);
+
+        this.ownId = json.data.me.id;
+        this.log("My id is " + this.ownId);
+
+        for(const persona of json.data.me.personas) {
+            if(persona.namespaceName === "cem_ea_id")
+                this.ownUsername = persona.displayName;
+            else if(persona.namespaceName === "discord" && persona.displayName) {
+                this.log(`My linked discord account is ${persona.displayName}`);
+                const [username, discriminator] = persona.displayName.split("#");
+                if(username && discriminator) {
+                    const user = ZeresPluginLibrary.DiscordModules.UserStore.findByTag(username, discriminator);
+                    if(user && !(user.id in this.discordToEaIDs))
+                        this.discordToEaIDs[user.id] = [this.ownId];
+                }
+            }
+        }
+
+        if(this.ownUsername) {
+            this.log("My username is " + this.ownUsername);
+            this.friendIdToDisplayName[this.ownId] = this.ownUsername;
+        } else {
+            console.error("[EA] Couldn't find my username!");
+        }
+    }
+
     async getFriendsList() {
         this.log("Fetching friends list...");
 
         const req = await fetch("https://service-aggregation-layer.juno.ea.com/graphql?" +
             "operationName=GetMyFriends&" +
-            "variables=%7B%22offset%22%3A0%2C%22limit%22%3A99%7D&" +
-            "extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22f8856d3ce53eac1d88ee1780851888a25575fad4f142e7b6142c0ace28797baa%22%7D%7D", {
+            `variables=${encodeURIComponent(JSON.stringify({offset: 0, limit: 99}))}&` +
+            `extensions=${encodeURIComponent(JSON.stringify({persistedQuery: {version: 1, sha256Hash: "f8856d3ce53eac1d88ee1780851888a25575fad4f142e7b6142c0ace28797baa"}}))}`, {
             headers: {
                 "Authorization": `Bearer ${this.auth.access_token}`,
             }
@@ -3937,8 +4175,8 @@ class EA extends Platform {
 
     async processPresence(id, data, timestamp) {
         try {
-            if(data.gameActivity_isNull) return delete this.presenceCache[id];
-            if(data.presence_null === undefined) return; // own status (not presence, just online/away/invisible)
+            if(data.gameActivity_isNull) return this.deletePresence(id);
+            if(data.presence_null === undefined) return; // is own status (not presence, just online/away/invisible)
 
             const presenceData = JSON.parse(data.gameActivity_gamePresence);
             const richPresenceData = data.gameActivity_richPresence ? JSON.parse(data.gameActivity_richPresence) : {};
@@ -3950,7 +4188,8 @@ class EA extends Platform {
                 type: 0,
                 timestamps: {start: timestamp},
                 assets: {
-                    large_image: gameArtUrl ? `url:${gameArtUrl}` : this.eaLogoAssetId
+                    large_image: gameArtUrl ? `url:${gameArtUrl}` : this.eaLogoAssetId,
+                    large_text: data.gameActivity_gameTitle
                 },
                 username: this.friendIdToDisplayName[id],
                 priority: 1,
@@ -4013,9 +4252,20 @@ class EA extends Platform {
 
             this.presenceCache[id] = presence;
             this.log(presence);
+
+            if(!previousPresence || presence.name !== previousPresence.name) {
+                this.updateUser(id, this.discordToEaIDs);
+            }
         } catch(e) {
             console.error(id, data, timestamp);
             err(e);
+        }
+    }
+
+    deletePresence(id) {
+        if(this.presenceCache[id]) {
+            delete this.presenceCache[id];
+            this.updateUser(id, this.discordToEaIDs);
         }
     }
 
@@ -4025,8 +4275,8 @@ class EA extends Platform {
 
             const req = await fetch("https://service-aggregation-layer.juno.ea.com/graphql?" +
                 "operationName=inGamePresenceData&" +
-                `variables=%7B%22locale%22%3A%22en%22%2C%22offerIds%22%3A%5B%22${productId}%22%5D%7D&` +
-                "extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%226d7316368c350bbf3de50676add3d1d00d73021270f9d365e5a5e388fd9741c8%22%7D%7D");
+                `variables=${encodeURIComponent(JSON.stringify({locale: "en", offerIds: [productId]}))}&` +
+                `extensions=${encodeURIComponent(JSON.stringify({persistedQuery: {version: 1, sha256Hash: "6d7316368c350bbf3de50676add3d1d00d73021270f9d365e5a5e388fd9741c8"}}))}`);
             const json = await JSON.parse(req.body);
 
             this.assetCache[productId] = json.data.gameProducts.items[0].baseItem.keyArt.aspect1x1Image.path;
@@ -4102,7 +4352,7 @@ class EA extends Platform {
 
     destroy(pluginShutdown) {
         this.enabled = false;
-        this.presenceCache = {};
+        for(const id in this.presenceCache) this.deletePresence(id);
         clearInterval(this.heartbeat);
         clearInterval(this.reconnectInterval);
         if(this.socket) this.socket.close(1001);
@@ -4118,39 +4368,14 @@ class EA extends Platform {
 
 const platforms = [Riot, Epic, Steam, EA, Minecraft, Twitch];
 
-module.exports = (() => {
-    const config = {
-        "info": {
-            "name": pluginName,
-            "authors": [{
-                "name": "Giorgio",
-                "discord_id": "316978243716775947",
-                "github_username": "giorgi-o"
-            }],
-            "version": "0.2.4",
-            "description": "Show what people are playing on other platforms such as Steam and Valorant",
-            "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
-            "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
-        },
-        "main": "CrossPlatformPlaying.plugin.js"
-    };
-
+const CrossPlatformPlaying = (() => {
     return !global.ZeresPluginLibrary ? class {
-        constructor() {
-            this._config = config;
-        }
-        getName() {
-            return config.info.name;
-        }
-        getAuthor() {
-            return config.info.authors.map(a => a.name).join(", ");
-        }
-        getDescription() {
-            return config.info.description;
-        }
-        getVersion() {
-            return config.info.version;
-        }
+        constructor() {this._config = config;}
+        getName() {return config.info.name;}
+        getAuthor() {return config.info.authors.map(a => a.name).join(", ");}
+        getDescription() {return config.info.description;}
+        getVersion() {return config.info.version;}
+
         load() {
             BdApi.showConfirmationModal("Library Missing", `The library plugin needed for ${config.info.name} is missing. Please click Download Now to install it.`, {
                 confirmText: "Download Now",
@@ -4169,80 +4394,42 @@ module.exports = (() => {
         start() {}
         stop() {}
     } : (([Plugin, Api]) => {
-        const plugin = (Plugin, Api) => {
+        const plugin = (Plugin, Library) => {
             return class CrossPlatformPlaying extends Plugin {
-                load() {
-                    const version = config.info.version;
-                    // added: green, improved: blurple, fixed: red, progress: yellow
-                    const changelog = [
-                        {
-                            title: "EA",
-                            type: "improved",
-                            items: [
-                                "Fixed a bug in EA where the 'Fetch RemID' button wasn't working",
-                                "Also got rid of some unnecessary code"
-                            ]
-                        }
-                    ];
-
-                    try {
-                        const data = BdApi.loadData(pluginName, "currentVersionInfo");
-                        if(!data || !data.hasShownChangelog || data.version !== version) {
-                            setTimeout(() => {
-                                try {
-                                    ZeresPluginLibrary.Modals.showChangelogModal("CrossPlatformPlaying Changelog", version, changelog);
-                                    BdApi.saveData(pluginName, "currentVersionInfo", {
-                                        version: version,
-                                        hasShownChangelog: true
-                                    });
-                                } catch(e) {console.error(e)}
-                            }, 5000);
-                        }
-                    } catch(e) {
-                        // newlines don't work but whatever
-                        err("Your CrossPlatformPlaying config JSON is invalid!\nTry putting it into an online JSON formatter to look for any errors.\n" + e);
-                    }
+                constructor() {
+                    super();
                 }
+
                 onStart() {
                     // Required function. Called when the plugin is activated (including after reloads)
+
+                    console.log("[CrossPlatformPlaying] Starting...");
+                    const loadStart = Date.now();
 
                     // check if config json is valid
                     try {
                         BdApi.loadData(pluginName, "");
                     } catch(e) {
-                        return;
+                        return console.error("[CrossPlatformPlaying] Could not load config JSON! Is it corrupt?");
                     }
 
-                    this.instances = [];
-                    // initialise platforms
-                    for(const Platform of platforms) {
-                        this.instances.push(new Platform());
-                    }
-
-                    // setup getActivity() patch
-                    const ActivityStore = ZeresPluginLibrary.DiscordModules.UserStatusStore;
-                    BdApi.Patcher.after(pluginName, ActivityStore, "getActivities", (_this, args, ret) => {
-
-                        const id = args[0];
-
-                        let newActivities = [];
-
-                        for(const platform of this.instances) {
-                            const presences = platform.getPresence(id);
-                            if(presences) newActivities.push(...presences);
-                        }
-
-                        if(newActivities.length === 0) return ret;
-
-                        const sortFunction = (a, b) => (b.priority || 0) - (a.priority || 0);
-                        return newActivities.concat(ret).sort(sortFunction);
-                    });
+                    discord_id = ZeresPluginLibrary.DiscordModules.UserInfoStore.getId();
 
                     this.loadPatches();
+                    this.patchGetActivity();
                     this.patchActivityHeader();
                     this.patchGetAssetImage();
                     this.reloadActivityRenderModule();
                     this.patchRenderHeader();
+                    this.setUpdateUser();
+
+                    // initialise platforms
+                    this.instances = [];
+                    for(const platform of platforms) {
+                        this.instances.push(new platform());
+                    }
+
+                    console.log(`[CrossPlatformPlaying] Started in ${Date.now() - loadStart}ms`);
                 }
 
                 onStop() {
@@ -4255,10 +4442,11 @@ module.exports = (() => {
                     for(const timeout of timeouts) clearTimeout(timeout);
                     for(const interval of intervals) clearInterval(interval);
                     timeouts.length = 0; intervals.length = 0;
-
                 }
 
                 getSettingsPanel() {
+                    if(!this.buttonClassNames) this.buttonClassNames = BdApi.findModuleByProps("button", "lookFilled", "grow");
+
                     const body = document.createElement("div");
 
                     const buttons = [];
@@ -4291,8 +4479,9 @@ module.exports = (() => {
 
                         // the buttons clicked to show the different platforms
                         const button = document.createElement("button");
-                        button.className = "bd-button";
-                        button.style.margin = "6px";
+                        button.classList.add(this.buttonClassNames.button, this.buttonClassNames.lookFilled, this.buttonClassNames. colorBrand, this.buttonClassNames.sizeMedium, this.buttonClassNames.grow);
+                        button.style.margin = "5px";
+                        button.style.display = "inline"; // to make the buttons appear side by side
                         button.innerText = platform.constructor.name;
                         button.onclick = () => {
                             if(activePanel) activePanel.style.display = "none";
@@ -4351,6 +4540,43 @@ module.exports = (() => {
                     const activityAssetModule = moduleList.filter(m => m.exports.getAssetImage)[0];
                     const activityHeaderModule = moduleList.filter(m => m.exports.default && m.exports.default.toString().includes("default.Messages.USER_ACTIVITY_HEADER_PLAYING"))[0];
 
+                    const ActivityStore = ZeresPluginLibrary.DiscordModules.UserStatusStore;
+
+                    this.patchGetActivity = () => {
+                        BdApi.Patcher.after(pluginName, ActivityStore, "getActivities", (_this, args, ret) => {
+
+                            const id = args[0];
+
+                            let newActivities = [];
+
+                            for(const platform of this.instances) {
+                                const presences = platform.getPresence(id);
+                                if(presences) newActivities.push(...presences);
+                            }
+
+                            if(newActivities.length === 0) return ret;
+
+                            const sortFunction = (a, b) => (b.priority || 0) - (a.priority || 0);
+                            return newActivities.concat(ret).sort(sortFunction);
+                        });
+                    }
+
+                    this.setUpdateUser = () => {
+                        const dispatchFunction = ZeresPluginLibrary.DiscordModules.UserStatusStore._dispatcher.dispatch.bind(ZLibrary.DiscordModules.UserStatusStore._dispatcher);
+
+                        updateUser = (id) => {
+                            const user = ZeresPluginLibrary.DiscordModules.UserStore.getUser(id);
+                            /*if(user) console.log(`Updating user ${user.username}#${user.discriminator}`);
+                            else console.log(`Updating user with id ${id}...`);*/
+
+                            if(user) dispatchFunction({
+                                type: "GUILD_MEMBER_UPDATE",
+                                guildId: null, // update in all guilds
+                                user: user
+                            });
+                        }
+                    }
+
                     this.patchActivityHeader = () => {
                         // only works with "playing ..." headers
                         BdApi.Patcher.after(pluginName, activityHeaderModule.exports, "default", (_this, args, ret) => {
@@ -4387,14 +4613,12 @@ module.exports = (() => {
                     this.reloadActivityRenderModule = () => {
                         // the activityRenderModule.renderImage function stores a reference to the unpatched getAssetImage function
                         // we need to reload the webpack to update the reference
-                        // todo use "instead" patcher for better compatibility with other plugins
                         const reloadedModule = {exports: {}};
                         ZeresPluginLibrary.WebpackModules.require.m[activityRenderModule.id](reloadedModule, reloadedModule.exports, ZeresPluginLibrary.WebpackModules.require);
-                        activityRenderModule.exports.default.prototype.renderImage = reloadedModule.exports.default.prototype.renderImage;
-                        activityRenderModule.exports.default.prototype.renderHeader = reloadedModule.exports.default.prototype.renderHeader;
-                    }
 
-                    discord_id = ZeresPluginLibrary.DiscordModules.UserInfoStore.getId();
+                        BdApi.Patcher.instead(pluginName, activityRenderModule.exports.default.prototype, "renderImage", (_this, args) => reloadedModule.exports.default.prototype.renderImage.call(_this, ...args));
+                        BdApi.Patcher.instead(pluginName, activityRenderModule.exports.default.prototype, "renderHeader", (_this, args) => reloadedModule.exports.default.prototype.renderHeader.call(_this, ...args));
+                    }
                 }
             };
         };

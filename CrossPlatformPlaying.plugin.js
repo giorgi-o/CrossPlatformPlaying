@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what friends are playing even if they have their game activity turned off
- * @version 0.2.5
+ * @version 0.2.6
  * @authorId 316978243716775947
  * @source https://github.com/giorgi-o/CrossPlatformPlaying
  */
@@ -86,12 +86,19 @@ const config = {
             "discord_id": "316978243716775947",
             "github_username": "giorgi-o"
         }],
-        "version": "0.2.5",
+        "version": "0.2.6",
         "description": "Lets you see what your friends are playing even if they turned off game activity",
         "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
         "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
     },
     "changelog": [{ // added: green, improved: blurple, fixed: red, progress: yellow
+        "title": "Minor update",
+        "type": "improved",
+        "items": [
+            "Fixed crashing when EA decides to not send game art",
+            "Changelog for version 0.2.5:",
+        ]
+    }, {
         "title": "New Stuff",
         "type": "added",
         "items": [
@@ -4278,6 +4285,8 @@ class EA extends Platform {
                 `variables=${encodeURIComponent(JSON.stringify({locale: "en", offerIds: [productId]}))}&` +
                 `extensions=${encodeURIComponent(JSON.stringify({persistedQuery: {version: 1, sha256Hash: "6d7316368c350bbf3de50676add3d1d00d73021270f9d365e5a5e388fd9741c8"}}))}`);
             const json = await JSON.parse(req.body);
+
+            if(!json.data.gameProducts.items[0].baseItem) return null;
 
             this.assetCache[productId] = json.data.gameProducts.items[0].baseItem.keyArt.aspect1x1Image.path;
             return json.data.gameProducts.items[0].baseItem.keyArt.aspect1x1Image.path;

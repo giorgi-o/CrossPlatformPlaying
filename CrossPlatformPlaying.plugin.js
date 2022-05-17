@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what friends are playing even if they have their game activity turned off
- * @version 0.2.6
+ * @version 0.2.7
  * @authorId 316978243716775947
  * @source https://github.com/giorgi-o/CrossPlatformPlaying
  */
@@ -86,36 +86,33 @@ const config = {
             "discord_id": "316978243716775947",
             "github_username": "giorgi-o"
         }],
-        "version": "0.2.6",
+        "version": "0.2.7",
         "description": "Lets you see what your friends are playing even if they turned off game activity",
         "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
         "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
     },
     "changelog": [{ // added: green, improved: blurple, fixed: red, progress: yellow
-        "title": "Minor update",
+        "title": "Priorities",
         "type": "improved",
         "items": [
-            "Fixed crashing when EA decides to not send game art",
-            "Changelog for version 0.2.5:",
+            "Added priorities in order to show the most important activities first when a user has multiple",
         ]
     }, {
-        "title": "New Stuff",
-        "type": "added",
-        "items": [
-            "This update focuses more on the Discord side of things.",
-            "Activities now properly update in the guild member list! (finally)",
-            "The settings panel looks 1% better now",
-            "Shout-out to Discord for changing the guild activity display code while I was working on it lol"
-        ]
-    }, {
-        "title": "Auto-Updating",
+        "title": "Twitch is going away",
         "type": "fixed",
-        "items": ["So turns out auto-updating broke a while ago, whoops. Should be working now."]
-    }, {
-        "title": "Improvements",
-        "type": "improved",
-        "items": ["All round bug fixes and improvements, you know the drill :)"]
-    }]
+        "items": [
+            "So Twitch decided to remove the friends feature on May 25th.",
+            "The code will stay until it stops working. If the plugin crashes once it does, you may have to disable Twitch if you use it.",
+        ]
+    },{
+        "title": "EA",
+        "type": "fixed",
+        "items": [
+            "In other bad news, EA have started encrypting the cookie.ini file containing the RemID cookie.",
+            "If the plugin still works, that's good news. They seem to be invalidating old RemIDs however, so at one point it will stop working, at which point you'll have to wait for me to find a way to bypass the encryption.",
+            "If someone's got a tip on how to do so, please do get in touch! :)",
+        ]
+    },]
 };
 
 // the discord id of the current user (once the plugin loads)
@@ -165,7 +162,7 @@ class Platform {
             if(presenceCache[platform_id])
                 presences.push(presenceCache[platform_id]);
         }
-        if(presences) return presences;
+        if(presences.length) return presences;
     }
 
     // helper method to call updateUser() on a user using their user id
@@ -222,13 +219,17 @@ const intervals = [];
 const setTimeout = (fn, delay) => {
     const id = window.setTimeout(() => {
         removeFromList(timeouts, id);
-        fn();
+        try {fn()}
+        catch(e) {err(e)}
     }, delay);
     timeouts.push(id);
     return id;
 }
 const setInterval = (fn, delay) => {
-    const id = window.setInterval(fn, delay);
+    const id = window.setInterval(() => {
+        try {fn()}
+        catch(e) {err(e)}
+    }, delay);
     intervals.push(id);
     return id;
 }
@@ -269,21 +270,24 @@ class SimpleSocket extends EventTarget {
         this.req = https.request(reqOptions);
 
         this.req.on('upgrade', (res, socket, head) => {
-            // check accept header
-            const expected = crypto.createHash('sha1').update(this.key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest('base64');
-            if(res.headers["sec-websocket-accept"] !== expected) return console.error("Something fishy is going on... sec-websocket-accept expected vs recieved:", expected, res.headers["sec-websocket-accept"]);
+            try { // check accept header
+                const expected = crypto.createHash('sha1').update(this.key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest('base64');
+                if(res.headers["sec-websocket-accept"] !== expected) return console.error("Something fishy is going on... sec-websocket-accept expected vs recieved:", expected, res.headers["sec-websocket-accept"]);
 
-            this.socket = socket;
+                this.socket = socket;
 
-            socket.on('data', data => this.receive(data));
-            socket.on('close', () => this.closed());
-            socket.on('error', console.error);
+                socket.on('data', data => this.receive(data));
+                socket.on('close', () => this.closed());
+                socket.on('error', console.error);
 
-            this.status = SimpleSocket.states.READY;
+                this.status = SimpleSocket.states.READY;
 
-            if(this.onconnect) this.onconnect(socket, res);
+                if(this.onconnect) this.onconnect(socket, res);
 
-            if(head && head.length) this.receive(head);
+                if(head && head.length) this.receive(head);
+            } catch(e) {
+                err(e);
+            }
         });
 
         this.req.on("error", console.error);
@@ -396,17 +400,21 @@ class SimpleSocket extends EventTarget {
     }
 
     closed(data) {
-        if(this.status === SimpleSocket.states.CLOSED) return;
+        try {
+            if(this.status === SimpleSocket.states.CLOSED) return;
 
-        this.status = SimpleSocket.states.CLOSED;
-        this.socket.destroy();
+            this.status = SimpleSocket.states.CLOSED;
+            this.socket.destroy();
 
-        if(!this.onclose) return;
-        if(data) {
-            const statusCode = data.readUInt16BE();
-            const reason = data.toString('utf-8', 2);
-            this.onclose(statusCode, reason);
-        } else this.onclose();
+            if(!this.onclose) return;
+            if(data) {
+                const statusCode = data.readUInt16BE();
+                const reason = data.toString('utf-8', 2);
+                this.onclose(statusCode, reason);
+            } else this.onclose();
+        } catch(e) {
+            err(e);
+        }
     }
 
     maskData(data, key) {
@@ -444,6 +452,16 @@ class SimpleSocket extends EventTarget {
 // support continuation frames
 // support close codes
 // support http status codes other than 101
+
+const Priorities = {
+    PLAYING:                7, // user has game open & actively playing
+    IN_LOBBY:               6, // user has game open and is about to launch (in lobby)
+    DISCORD_RICH_PRESENCE:  5, // discord presence, with rich presence
+    IN_LOBBY_AFK:           4, // user has game open but is afk
+    NONPRIMARY_PLAYING:     3, // user has their game open, but this is not the primary presence (e.g. Steam)
+    DISCORD_NORMAL:         2, // discord presence, without rich presence
+    SECONDARY:              1  // secondary activity (e.g. Spotify/Twitch)
+}
 
 // helper functions for building the settings panel
 const SettingsBuilder = {
@@ -907,7 +925,7 @@ class Steam extends Platform {
                     large_text: "Playing as " + summary.personaname
                 },
                 username: summary.personaname,
-                priority: -1
+                priority: Priorities.NONPRIMARY_PLAYING
             };
 
             this.presenceCache[summary.steamid] = presence;
@@ -1064,7 +1082,7 @@ class Minecraft extends Platform {
             if(privatePresences) presences.push(...privatePresences);
         }
 
-        if(presences) return presences;
+        if(presences.length) return presences;
     }
 
     destroy(pluginShutdown) {
@@ -1608,12 +1626,23 @@ class Twitch extends Platform {
                 return err("Error 401 when fetching twitch friends!");
             }
 
+            if(json_data.status === 502) {
+                console.error(json_data);
+                return console.error("Error 502 when fetching twitch friends!");
+            }
+
             if(json_data[0].errors) {
                 console.error(json_data);
                 if(["service timeout", "service error", "service unavailable"].includes(json_data[0].errors[0].message)) return;
                 console.error(data);
                 return err("Twitch friends request returned error!");
 
+            }
+
+            if(!json_data[0].data.currentUser) {
+                this.destroy();
+                console.error(json_data);
+                return err("Twitch friends request returned no currentUser! Is your account active?");
             }
 
             this.log(json_data);
@@ -1726,6 +1755,7 @@ class Twitch extends Platform {
                             details: `Watching ${friend.activity.user.displayName}`,
                             state: metadata.title,
                             type: 3,
+                            party: {id: friend.activity.user.login},
                             timestamps: {start: isWatchingSamePerson ? previousPresence.timestamps.start : +new Date()},
                             assets: {
                                 large_image: away ? "899072297216913449" : "twitch:" + friend.activity.user.login,
@@ -1734,7 +1764,7 @@ class Twitch extends Platform {
                                 small_text: friend.activity.user.displayName
                             },
                             username: friend.displayName,
-                            priority: -1
+                            priority: Priorities.SECONDARY
                         }
                     }
                 } else if(friend.activity.type === "STREAMING") this.presenceCache[friend.id] = () => {
@@ -1749,7 +1779,7 @@ class Twitch extends Platform {
                         url: "https://twitch.tv/" + friend.login,
                         id: "",
                         username: friend.displayName,
-                        priority: 3
+                        priority: Priorities.NONPRIMARY_PLAYING // should this be above the actual game presence?
                     }
                 }
 
@@ -1788,7 +1818,7 @@ class Twitch extends Platform {
 
     getPresence(discord_id) {
         const presenceFunctions = super.getPresence(discord_id, this.discordToTwitchID, this.presenceCache);
-        if(presenceFunctions) return presenceFunctions.map(presenceFunction => presenceFunction());
+        if(presenceFunctions && presenceFunctions.length) return presenceFunctions.map(presenceFunction => presenceFunction());
     }
 
     getSettings(discordUserList, discordUsersDatalist) {
@@ -1883,7 +1913,7 @@ class Riot extends Platform {
             if(wrPresence) presences.push(wrPresence);
         }
 
-        if(presences) return presences;
+        if(presences.length) return presences;
     }
 
     destroy(pluginShutdown) {
@@ -2503,7 +2533,7 @@ class Valorant {
                     small_text: `${this.ranks[presenceData.competitiveTier]}${presenceData.leaderboardPosition > 0 ? ` #${presenceData.leaderboardPosition}` : ""} | LVL ${presenceData.accountLevel}`
                 },
                 username: username,
-                priority: 2
+                priority: Priorities.PLAYING
             };
             let presence = {};
 
@@ -2517,6 +2547,12 @@ class Valorant {
                         if(presenceData.partyState === "CUSTOM_GAME_SETUP") return `Setting Up Custom Game`;
                         return `${presenceData.partyState} (?) - ${getGamemode()}`;
                     }
+                    const menusGetLargeImage = () => {
+                        if(presenceData.isIdle) return this.assets["game_icon_yellow"];
+                        if(presenceData.partyState === "CUSTOM_GAME_SETUP") return getMapIcon(presenceData.matchMap);
+                        if(presenceData.playerCardId) return `url:https://media.valorant-api.com/playercards/${presenceData.playerCardId}/smallart.png`;
+                        return this.assets["game_icon"];
+                    }
                     const menusGetLargeText = () => (presenceData.isIdle ? "Away" : "Lobby");
 
                     presence = {
@@ -2524,10 +2560,10 @@ class Valorant {
                         details: menusGetDetails(),
                         assets: {
                             ...presenceBoilerplate.assets,
-                            large_image: presenceData.isIdle ? this.assets["game_icon_yellow"] : presenceData.partyState === "CUSTOM_GAME_SETUP" ? getMapIcon(presenceData.matchMap) : this.assets["game_icon"],
+                            large_image: menusGetLargeImage(),
                             large_text: menusGetLargeText(),
                         },
-                        priority: 1
+                        priority: presenceData.isIdle ? Priorities.IN_LOBBY_AFK : Priorities.IN_LOBBY
                     }
                     break;
                 case "PREGAME":
@@ -2654,6 +2690,7 @@ class Lol {
                 "notes": "Added in manually"
             }
         }
+        this.maps = {};
 
         this.presenceCache = {};
         this.log = log;
@@ -2722,13 +2759,25 @@ class Lol {
         const queueTypes = JSON.parse(queueTypesReq.body);
         for(const queue of queueTypes) {
             if(queue.description) queue.description = queue.description.replace(" games", "");
-            this.queues[queue["queueId"]] = queue;
+            this.queues[queue.queueId] = queue;
+        }
+    }
+
+    async fetchMapsData() {
+        const mapsReq = await fetch("https://static.developer.riotgames.com/docs/lol/maps.json");
+        const maps = JSON.parse(mapsReq.body);
+        for(const map of maps) {
+            this.maps[map.mapId.toString()] = {
+                name: map.mapName,
+                notes: map.notes
+            };
         }
     }
 
     fetchData() {
         this.fetchGameVersion().then(() => {
             this.fetchRpcAssets();
+            this.fetchMapsData();
             this.fetchChampionData();
             this.fetchQueueTypes();
         });
@@ -2759,6 +2808,7 @@ class Lol {
             timestamp = Math.max(data.timeStamp, timestamp) || data.timeStamp || timestamp;
 
             let gamemode, map;
+            if(data.mapId in this.maps) map = this.maps[data.mapId].name;
             if(data.gameQueueType === "PRACTICETOOL") [gamemode, map] = ["Practice Tool", "Summoner's Rift"];
             else if (data.queueId && this.queues[data.queueId]) {
                 const gamemodeData = this.queues[data.queueId];
@@ -2775,7 +2825,7 @@ class Lol {
                 type: 0,
                 details: gamemode,
                 assets: {
-                    large_image: data.gameMode === "TFT" ? this.assets.logo_tft : this.assets.logo_lol,
+                    large_image: data.gameMode === "TFT" ? this.assets.logo_tft : this.assets.logo_lol, //`url:https://ddragon.leagueoflegends.com/cdn/${this.gameVersion}/img/profileicon/${data.profileIcon}.png`,
                     large_text: `Level ${data.level} | Mastery ${data.masteryScore}`,
                     small_image: data.rankedLeagueTier ? this.assets.ranks[data.rankedLeagueTier.toLowerCase()] : null,
                     small_text: data.rankedLeagueTier ? `${data.rankedLeagueTier} ${data.rankedLeagueDivision}` : null
@@ -2785,7 +2835,7 @@ class Lol {
                     start: timestamp
                 },
                 username: username,
-                priority: 2
+                priority: Priorities.PLAYING
             };
             let presence;
 
@@ -2813,7 +2863,7 @@ class Lol {
                 presence = {
                     ...presenceBoilerplate,
                     details: "In the Main Menu",
-                    priority: -2,
+                    priority: Priorities.IN_LOBBY
                 }
                 if(previousPresence && (previousPresence.details === "In the Main Menu" || previousPresence.state === "In the Lobby"))
                     presence.timestamps.start = previousPresence.timestamps.start;
@@ -2821,7 +2871,7 @@ class Lol {
                 presence = {
                     ...presenceBoilerplate,
                     state: "In the Lobby",
-                    priority: -2
+                    priority: Priorities.IN_LOBBY
                 }
                 if(data.gameStatus === "hosting_Custom")
                     presence.details = "Custom";
@@ -2952,7 +3002,7 @@ class WildRift {
                 start: timestamp
             },
             username: username,
-            priority: 2
+            priority: Priorities.PLAYING
         };
 
         const previousPresence = this.presenceCache[puuid];
@@ -3369,6 +3419,7 @@ class Epic extends Platform {
                     err(e);
                 }
             };
+            global.epicreceive = sock.onmessage; // TODO remove this
 
             sock.error = console.error;
             sock.onclose = () => {
@@ -3455,7 +3506,7 @@ class Epic extends Platform {
                 start: timestamp
             },
             username: username,
-            priority: 2
+            priority: Priorities.NONPRIMARY_PLAYING
         }
         let presence;
 
@@ -3581,6 +3632,7 @@ class Epic extends Platform {
                         timestamps: {
                             start: timestamp
                         },
+                        priority: Priorities.PLAYING,
                         gameId: status.SessionId
                     }
 
@@ -3816,7 +3868,6 @@ class EA extends Platform {
 
             if(!req1.headers['set-cookie']) {
                 BdApi.alert("Could not login to EA! Most likely your RemID is invalid.");
-                this.remid = "";
                 this.destroy();
                 return;
             }
@@ -3866,7 +3917,7 @@ class EA extends Platform {
         try {
             fileContents = fs.readFileSync(filepath).toString();
         } catch(e) {
-            return [false, e];
+            return [false, e.toString() || "Could not read file!"];
         }
 
         for(const line of fileContents.split('\n')) {
@@ -3875,7 +3926,7 @@ class EA extends Platform {
             }
         }
 
-        return [false, "Could not parse file! Is it corrupt?"];
+        return [false, "Could not parse file! Is it corrupt? (Note: EA have started encrypting the cookie.ini file, so this plugin won't work until I find a way to bypass the encryption)"];
     }
 
     async getOwnUsername() {
@@ -4199,7 +4250,7 @@ class EA extends Platform {
                     large_text: data.gameActivity_gameTitle
                 },
                 username: this.friendIdToDisplayName[id],
-                priority: 1,
+                priority: Priorities.PLAYING,
                 session: presenceData.data.session
             };
 
@@ -4247,6 +4298,7 @@ class EA extends Platform {
                     if(match) {
                         presence.details = match[1];
                         presence.state = match[2];
+                        presence.priority = Priorities.IN_LOBBY;
                     }
                     break;
                 }
@@ -4337,7 +4389,7 @@ class EA extends Platform {
                 } else {
                     button.innerHTML = "Failed";
                     console.error(error);
-                    BdApi.alert(error.message);
+                    BdApi.alert(error);
                 }
             }
         }
@@ -4415,6 +4467,14 @@ const CrossPlatformPlaying = (() => {
                     console.log("[CrossPlatformPlaying] Starting...");
                     const loadStart = Date.now();
 
+                    // for debugging
+                    global.CPP = {
+                        plugin: this, platforms, config,
+                        fetch, setTimeout, setInterval, updateUser, removeFromList,
+                        Platform, SimpleSocket, SettingsBuilder, Priorities,
+                        timeouts, intervals
+                    };
+
                     // check if config json is valid
                     try {
                         BdApi.loadData(pluginName, "");
@@ -4458,6 +4518,30 @@ const CrossPlatformPlaying = (() => {
 
                     const body = document.createElement("div");
 
+                    // to check if settings panel is still open
+                    const bodyId = crypto.randomBytes(16).toString("base64");
+                    body.id = bodyId;
+
+                    const theInterval = setInterval(() => {
+                        if(document.getElementById(bodyId)) {
+                            for(let i = 0; i < buttons.length; i++) {
+                                const platform = this.instances[i];
+                                const button = buttons[i];
+
+                                if(platform.enabled) {
+                                    button.classList.remove(this.buttonClassNames.colorTransparent);
+                                    button.classList.add(this.buttonClassNames.colorBrand);
+                                } else {
+                                    button.classList.remove(this.buttonClassNames.colorBrand);
+                                    button.classList.add(this.buttonClassNames.colorTransparent);
+                                }
+
+                            }
+                        } else { // settings panel closed
+                            clearInterval(theInterval);
+                        }
+                    }, 100);
+
                     const buttons = [];
                     const panels = [];
                     let activePanel;
@@ -4488,7 +4572,7 @@ const CrossPlatformPlaying = (() => {
 
                         // the buttons clicked to show the different platforms
                         const button = document.createElement("button");
-                        button.classList.add(this.buttonClassNames.button, this.buttonClassNames.lookFilled, this.buttonClassNames. colorBrand, this.buttonClassNames.sizeMedium, this.buttonClassNames.grow);
+                        button.classList.add(this.buttonClassNames.button, this.buttonClassNames.lookFilled, this.buttonClassNames.colorBrand, this.buttonClassNames.sizeMedium, this.buttonClassNames.grow);
                         button.style.margin = "5px";
                         button.style.display = "inline"; // to make the buttons appear side by side
                         button.innerText = platform.constructor.name;
@@ -4543,11 +4627,11 @@ const CrossPlatformPlaying = (() => {
                     // discord webpack module helper functions
                     const moduleList = Object.values(ZeresPluginLibrary.WebpackModules.getAllModules());
 
-                    const stringsModule = moduleList.filter(m => m.exports.default && m.exports.default.Messages && m.exports.default.Messages.USER_ACTIVITY_HEADER_PLAYING)[0];
+                    const stringsModule = moduleList.find(m => m.exports.default && m.exports.default.Messages && m.exports.default.Messages.USER_ACTIVITY_HEADER_PLAYING);
 
-                    const activityRenderModule = moduleList.filter(m => m.exports.default && m.exports.default.prototype && m.exports.default.prototype.renderImage && m.exports.default.prototype.renderHeader)[0];
-                    const activityAssetModule = moduleList.filter(m => m.exports.getAssetImage)[0];
-                    const activityHeaderModule = moduleList.filter(m => m.exports.default && m.exports.default.toString().includes("default.Messages.USER_ACTIVITY_HEADER_PLAYING"))[0];
+                    const activityRenderModule = moduleList.find(m => m.exports.default && m.exports.default.prototype && m.exports.default.prototype.renderImage && m.exports.default.prototype.renderHeader);
+                    const activityAssetModule = moduleList.find(m => m.exports.getAssetImage);
+                    const activityHeaderModule = moduleList.find(m => m.exports.default && m.exports.default.toString().includes("default.Messages.USER_ACTIVITY_HEADER_PLAYING"));
 
                     const ActivityStore = ZeresPluginLibrary.DiscordModules.UserStatusStore;
 
@@ -4560,14 +4644,25 @@ const CrossPlatformPlaying = (() => {
 
                             for(const platform of this.instances) {
                                 const presences = platform.getPresence(id);
-                                if(presences) newActivities.push(...presences);
+                                if(presences && presences.length) newActivities.push(...presences);
                             }
 
                             if(newActivities.length === 0) return ret;
 
-                            const sortFunction = (a, b) => (b.priority || 0) - (a.priority || 0);
+                            const activityPriority = (act) => {
+                                if(act.priority) return act.priority;
+                                if(act.type === 2) return Priorities.SECONDARY; // Spotify
+                                if(act.application_id === "307998818547531777") return Priorities.SECONDARY; // Medal.tv
+                                if(act.details || act.state) return Priorities.DISCORD_RICH_PRESENCE;
+                                return Priorities.DISCORD_NORMAL;
+                            }
+                            const sortFunction = (a, b) => {
+                                return activityPriority(b) - activityPriority(a);
+                            }
                             return newActivities.concat(ret).sort(sortFunction);
                         });
+
+                        global.CPP.getActivities = ZeresPluginLibrary.DiscordModules.UserStatusStore.getActivities;
                     }
 
                     this.setUpdateUser = () => {
@@ -4584,6 +4679,7 @@ const CrossPlatformPlaying = (() => {
                                 user: user
                             });
                         }
+                        global.CPP.updateUser = updateUser;
                     }
 
                     this.patchActivityHeader = () => {

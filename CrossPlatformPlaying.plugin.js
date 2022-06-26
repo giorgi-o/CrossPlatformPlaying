@@ -2,7 +2,7 @@
  * @name CrossPlatformPlaying
  * @author Giorgio
  * @description Show what friends are playing even if they have their game activity turned off
- * @version 0.2.7
+ * @version 0.2.8
  * @authorId 316978243716775947
  * @source https://github.com/giorgi-o/CrossPlatformPlaying
  */
@@ -86,33 +86,28 @@ const config = {
             "discord_id": "316978243716775947",
             "github_username": "giorgi-o"
         }],
-        "version": "0.2.7",
+        "version": "0.2.8",
         "description": "Lets you see what your friends are playing even if they turned off game activity",
         "github": "https://github.com/giorgi-o/CrossPlatformPlaying",
         "github_raw": "https://raw.githubusercontent.com/giorgi-o/CrossPlatformPlaying/main/CrossPlatformPlaying.plugin.js"
     },
-    "changelog": [{ // added: green, improved: blurple, fixed: red, progress: yellow
-        "title": "Priorities",
-        "type": "improved",
-        "items": [
-            "Added priorities in order to show the most important activities first when a user has multiple",
-        ]
-    }, {
-        "title": "Twitch is going away",
-        "type": "fixed",
-        "items": [
-            "So Twitch decided to remove the friends feature on May 25th.",
-            "The code will stay until it stops working. If the plugin crashes once it does, you may have to disable Twitch if you use it.",
-        ]
-    },{
-        "title": "EA",
-        "type": "fixed",
-        "items": [
-            "In other bad news, EA have started encrypting the cookie.ini file containing the RemID cookie.",
-            "If the plugin still works, that's good news. They seem to be invalidating old RemIDs however, so at one point it will stop working, at which point you'll have to wait for me to find a way to bypass the encryption.",
-            "If someone's got a tip on how to do so, please do get in touch! :)",
-        ]
-    },]
+    "changelog": [ // added: green, improved: blurple, fixed: red, progress: yellow
+        {
+            "title": "League of Legends",
+            "type": "added",
+            "items": [
+                "Added TFT Double Up",
+                "Added AFK in the lobby detection",
+            ]
+        },
+        {
+            "title": "Valorant",
+            "type": "improved",
+            "items": [
+                "Added Pearl map",
+            ]
+        },
+    ]
 };
 
 // the discord id of the current user (once the plugin loads)
@@ -2077,9 +2072,9 @@ class Riot extends Platform {
             const XMPPRegion = this.XMPPRegions[region];
 
             const messages = [
-                `<?xml version="1.0"?><stream:stream to="${XMPPRegion}.pvp.net" version="1.0" xmlns:stream="http://etherx.jabber.org/streams">`,
+                `<?xml version="1.0"?><stream:stream to="${XMPPRegion}.pvp.net" version="1.0" xmlns:stream="http://etherx.jabber.org/streams">`, "",
                 `<auth mechanism="X-Riot-RSO-PAS" xmlns="urn:ietf:params:xml:ns:xmpp-sasl"><rso_token>${RSO}</rso_token><pas_token>${PAS}</pas_token></auth>`,
-                `<?xml version="1.0"?><stream:stream to="${XMPPRegion}.pvp.net" version="1.0" xmlns:stream="http://etherx.jabber.org/streams">`,
+                `<?xml version="1.0"?><stream:stream to="${XMPPRegion}.pvp.net" version="1.0" xmlns:stream="http://etherx.jabber.org/streams">`, "",
                 "<iq id=\"_xmpp_bind1\" type=\"set\"><bind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"></bind></iq>",
                 "<iq id=\"_xmpp_session1\" type=\"set\"><session xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/></iq>",
                 "<iq type=\"get\" id=\"2\"><query xmlns=\"jabber:iq:riotgames:roster\" last_state=\"true\" /></iq>", // get friends list
@@ -2381,6 +2376,7 @@ class Valorant {
             "Ascent": "Ascent",
             "Foxtrot": "Breeze",
             "Canyon": "Fracture",
+            "Pitt": "Pearl",
             "Range": "The Range"
         }
         this.ranks = [
@@ -2495,7 +2491,7 @@ class Valorant {
                 if(!mapCodename) return this.assets["game_icon_white"];
                 return this.assets[`splash_${map === "Range" ? "range" : mapCodename.toLowerCase()}_square`];
             }
-            const getPartyText = () => `${presenceData.partyAccessibility === "OPEN" ? "Open" : "Closed"} Party${presenceData.isPartyOwner ? " Leader" : ""}`;
+            const getPartyText = () => `${presenceData.partyAccessibility === "OPEN" ? "Open" : "Closed"} Party${presenceData.isPartyOwner && presenceData.partySize > 1 ? " Leader" : ""}`;
             const getStartTimestamp = () => {
                 if(presenceData.sessionLoopState === "MENUS") {
                     if(presenceData.partyState === "MATCHMAKING")
@@ -2688,6 +2684,12 @@ class Lol {
                 "map": "Convergence",
                 "description": "Teamfight Tactics Double Up",
                 "notes": "Added in manually"
+            },
+            1160: {
+                "queueId": 1160,
+                "map": "Convergence",
+                "description": "Teamfight Tactics Double Up (Workshop)",
+                "notes": "Added in manually"
             }
         }
         this.maps = {};
@@ -2711,8 +2713,9 @@ class Lol {
                     try {
                         const presenceData = JSON.parse(presenceHalfParsed);
                         const timestamp = Riot.extractDataFromXML(lolData, "s.t");
+                        const status = Riot.extractDataFromXML(lolData, "st");
                         this.log(presenceData);
-                        this.processPresenceData(puuid, presenceData, timestamp);
+                        this.processPresenceData(puuid, presenceData, status, timestamp);
                     } catch(e) {
                         console.error(data);
                         err("Could not JSON parse Lol presence data!" + e);
@@ -2802,7 +2805,7 @@ class Lol {
         }
     }
 
-    async processPresenceData(puuid, data, timestamp) {
+    async processPresenceData(puuid, data, status, timestamp) {
         try {
             const username = this.riotPUUIDToSummonerName[puuid] || this.riotPUUIDToUsername[puuid];
             timestamp = Math.max(data.timeStamp, timestamp) || data.timeStamp || timestamp;
@@ -2816,6 +2819,8 @@ class Lol {
             } else if (data.queueId === "-1") gamemode = "Custom";
             else if (data.gameStatus === "outOfGame") gamemode = "In the Lobby"
             else gamemode = `(?) ${data.queueId} ${data.gameQueueType} ${data.gameStatus}`;
+
+            const isAway = status === "away";
 
             const previousPresence = this.presenceCache[puuid];
 
@@ -2862,20 +2867,22 @@ class Lol {
             } else if (data.gameStatus === "outOfGame") {
                 presence = {
                     ...presenceBoilerplate,
-                    details: "In the Main Menu",
-                    priority: Priorities.IN_LOBBY
+                    details: isAway ? "Main Menu (away)" : "In the Main Menu",
+                    priority: isAway ? Priorities.IN_LOBBY_AFK : Priorities.IN_LOBBY,
+                    inLobby: true
                 }
-                if(previousPresence && (previousPresence.details === "In the Main Menu" || previousPresence.state === "In the Lobby"))
+                if(previousPresence && previousPresence.inLobby)
                     presence.timestamps.start = previousPresence.timestamps.start;
             } else if (data.gameStatus.startsWith("hosting_")) {
                 presence = {
                     ...presenceBoilerplate,
-                    state: "In the Lobby",
-                    priority: Priorities.IN_LOBBY
+                    state: isAway ? "In the Lobby (away)" : "In the Lobby",
+                    priority: isAway ? Priorities.IN_LOBBY_AFK : Priorities.IN_LOBBY,
+                    inLobby: true
                 }
                 if(data.gameStatus === "hosting_Custom")
                     presence.details = "Custom";
-                if(previousPresence && (previousPresence.details === "In the Main Menu" || previousPresence.state === "In the Lobby"))
+                if(previousPresence && previousPresence.inLobby)
                     presence.timestamps.start = previousPresence.timestamps.start;
             } else if (data.gameStatus === "inQueue") {
                 presence = {
@@ -4637,29 +4644,35 @@ const CrossPlatformPlaying = (() => {
 
                     this.patchGetActivity = () => {
                         BdApi.Patcher.after(pluginName, ActivityStore, "getActivities", (_this, args, ret) => {
+                            const start = Date.now();
 
-                            const id = args[0];
+                            try {
+                                const id = args[0];
 
-                            let newActivities = [];
+                                let newActivities = [];
 
-                            for(const platform of this.instances) {
-                                const presences = platform.getPresence(id);
-                                if(presences && presences.length) newActivities.push(...presences);
+                                for(const platform of this.instances) {
+                                    const presences = platform.getPresence(id);
+                                    if(presences && presences.length) newActivities.push(...presences);
+                                }
+
+                                if(newActivities.length === 0) return ret;
+
+                                const activityPriority = (act) => {
+                                    if(act.priority) return act.priority;
+                                    if(act.type === 2) return Priorities.SECONDARY; // Spotify
+                                    if(act.application_id === "307998818547531777") return Priorities.SECONDARY; // Medal.tv
+                                    if(act.details || act.state) return Priorities.DISCORD_RICH_PRESENCE;
+                                    return Priorities.DISCORD_NORMAL;
+                                }
+                                const sortFunction = (a, b) => {
+                                    return activityPriority(b) - activityPriority(a);
+                                }
+                                return newActivities.concat(ret).sort(sortFunction);
+                            } finally {
+                                const time = Date.now() - start;
+                                if(time > 5) console.warn(`[${pluginName}] getActivities took ${time}ms`);
                             }
-
-                            if(newActivities.length === 0) return ret;
-
-                            const activityPriority = (act) => {
-                                if(act.priority) return act.priority;
-                                if(act.type === 2) return Priorities.SECONDARY; // Spotify
-                                if(act.application_id === "307998818547531777") return Priorities.SECONDARY; // Medal.tv
-                                if(act.details || act.state) return Priorities.DISCORD_RICH_PRESENCE;
-                                return Priorities.DISCORD_NORMAL;
-                            }
-                            const sortFunction = (a, b) => {
-                                return activityPriority(b) - activityPriority(a);
-                            }
-                            return newActivities.concat(ret).sort(sortFunction);
                         });
 
                         global.CPP.getActivities = ZeresPluginLibrary.DiscordModules.UserStatusStore.getActivities;

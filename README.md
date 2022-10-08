@@ -3,8 +3,12 @@ A [BetterDiscord](https://betterdiscord.app/) plugin that lets you see what your
 
 <img src="https://user-images.githubusercontent.com/20621396/147405144-5b87a3f7-0795-4733-9d0f-6d4d5b78fe72.png" alt="illustration"/>
 
-
 CrossPlatformPlaying is a plugin that lets you see what your friends are playing, as well as any additional information available such as gamemode, score, map, etc.
+
+# Plugin broke due to the latest Discord update.
+### Most if not all plugins are affected, although this plugin is more than the others, since Discord restricted direct Node access to plugins, something which I relied on heavily via the `net` and `tls` modules.
+### TLDR: The plugin can't directly connect to Riot/Epic/etc anymore.
+### Yes, I'm working on it, but it'll take some time, since I'll need to refactor most of the code. The plugin won't auto-update, so you'll need to check back here every now and then.
 
 ## Currently supports
 - Valorant/League of Legends

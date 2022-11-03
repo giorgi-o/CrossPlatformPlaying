@@ -9,6 +9,7 @@ CrossPlatformPlaying is a plugin that lets you see what your friends are playing
 ### Most if not all plugins are affected, although this plugin is more than the others, since Discord restricted direct Node access to plugins, something which I relied on heavily via the `net` and `tls` modules.
 ### TLDR: The plugin can't directly connect to Riot/Epic/etc anymore.
 ### Yes, I'm working on it, but it'll take some time, since I'll need to refactor most of the code. The plugin won't auto-update, so you'll need to check back here every now and then.
+### Update: access the beta [here](https://github.com/giorgi-o/CrossPlatformPlaying/pull/9)
 
 ## Currently supports
 - Valorant/League of Legends

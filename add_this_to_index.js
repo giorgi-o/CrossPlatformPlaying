@@ -5,7 +5,7 @@ const electron = require("electron"), electronPath = require.resolve("electron")
 class BrowserWindow extends electron.BrowserWindow {
 	constructor(options) {
 		let _preload = options.webPreferences.preload;;
-		options.webPreferences.preload = path.join(__dirname, "preload.js");
+		options.webPreferences.preload = path.join(__dirname, "CPP_preload.js");
 		const window = new electron.BrowserWindow(options);
 		window.webContents._original_preload = _preload;
 		return window;

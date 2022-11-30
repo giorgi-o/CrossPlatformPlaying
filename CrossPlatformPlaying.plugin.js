@@ -4427,7 +4427,7 @@
                      // fetching it is slow though, so I opted to compare the final header name to the one in the strings module
                      // const gameHeaderModule = moduleList.find(m => m.exports.Z?.toString().includes("USER_ACTIVITY_HEADER_PLAYING")).exports.Z.name
                      
-                     const stringsModule = moduleList.find(m => m.exports.Z?.Messages?.USER_ACTIVITY_HEADER_PLAYING);
+                     const stringsModule = moduleList.find(m => m.exports?.Z?.Messages?.USER_ACTIVITY_HEADER_PLAYING);
  
                      const ActivityStore = ZeresPluginLibrary.DiscordModules.UserStatusStore;
  
